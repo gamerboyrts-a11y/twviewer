@@ -135,6 +135,7 @@ typedef struct {
     int  scroll_offset;
     bool scroll_locked;
     char input[128];
+    char channel_search[48];
     AppState state;
     TabID    tab;
     char     status_msg[96];
@@ -1015,14 +1016,64 @@ static void draw_chat_tab(void) {
 
 static void draw_channels_tab(void) {
     float y = CHAT_TOP + 4;
-    draw_rect(4, y, BOT_W-54, 18, COL_INPUT_BG);
-    draw_text(8, y+3, 0.36f, COL_GRAY, "Search channel...");
+
+    /* Channel search input box with draft preview */
+    draw_rect(2, y, BOT_W-52, 18, COL_CHAT_BG);
+    draw_rect(2, y, BOT_W-52, 1, COL_DIVIDER);
+    draw_rect(2, y+17, BOT_W-52, 1, COL_DIVIDER);
+    draw_rect(2, y, 1, 18, COL_DIVIDER);
+    draw_rect(BOT_W-50, y, 1, 18, COL_DIVIDER);
+
+    if (app.channel_search[0]) {
+        C2D_Text txt;
+        C2D_TextBuf buf = C2D_TextBufNew(256);
+        C2D_TextFontParse(&txt, app.font, buf, app.channel_search);
+        float w, h;
+        C2D_TextGetDimensions(&txt, 0.36f, 0.36f, &w, &h);
+        const float box_w = BOT_W - 52 - 8;
+        if (w <= box_w) {
+            char disp[60];
+            snprintf(disp, sizeof(disp), "%s_", app.channel_search);
+            draw_text(6, y+3, 0.36f, COL_WHITE, disp);
+        } else {
+            const char *ellipsis = "..._";
+            C2D_Text ell_txt;
+            C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
+            float ell_w;
+            C2D_TextGetDimensions(&ell_txt, 0.36f, 0.36f, &ell_w, &h);
+            const char *p = app.channel_search;
+            while (*p) {
+                if ((*p & 0xC0) == 0x80) { p++; continue; }
+                C2D_Text suffix_txt;
+                C2D_TextFontParse(&suffix_txt, app.font, buf, p);
+                float suffix_w;
+                C2D_TextGetDimensions(&suffix_txt, 0.36f, 0.36f, &suffix_w, &h);
+                if (ell_w + suffix_w <= box_w) {
+                    char disp[70];
+                    snprintf(disp, sizeof(disp), "...%s_", p);
+                    draw_text(6, y+3, 0.36f, COL_WHITE, disp);
+                    break;
+                }
+                p++;
+            }
+        }
+        C2D_TextBufDelete(buf);
+    } else {
+        draw_text(6, y+3, 0.36f, COL_GRAY, "Search channel...");
+    }
+
     draw_rect(BOT_W-48, y, 44, 18, COL_BTN);
     draw_text(BOT_W-44, y+3, 0.36f, COL_WHITE, "Go");
+
     y += 22;
     draw_rect(4, y, BOT_W-8, 1, COL_DIVIDER); y += 4;
     draw_text(4, y, 0.36f, COL_GRAY, "Recent Channels:"); y += 14;
-    for (int i = 0; i < app.history_count; i++) {
+
+    /* Limit rendering to 50 max entries */
+    int display_count = app.history_count;
+    if (display_count > 50) display_count = 50;
+
+    for (int i = 0; i < display_count; i++) {
         bool sel = (i == app.history_sel);
         draw_rect(4, y, BOT_W-8, 18, sel ? COL_ROW_SEL : COL_CHAT_BG);
         draw_text(8, y+3, 0.38f, sel ? COL_YELLOW : COL_WHITE, app.history[i].name);
@@ -1031,8 +1082,11 @@ static void draw_channels_tab(void) {
         y += 20;
         if (y > CHAT_BOT-20) break;
     }
-    draw_rect(4, CHAT_BOT-18, 90, 16, COL_BTN_RED);
-    draw_text(8, CHAT_BOT-16, 0.34f, COL_WHITE, "Clear History");
+
+    /* Clear History button moved to bottom-right */
+    draw_rect(BOT_W-104, CHAT_BOT-18, 100, 16, COL_BTN_RED);
+    draw_text(BOT_W-100, CHAT_BOT-16, 0.34f, COL_WHITE, "Clear History");
+
     draw_rect(0, INPUT_BAR_Y, BOT_W, INPUT_BAR_H, COL_INPUT_BG);
     char cur[64];
     snprintf(cur, sizeof(cur), "Now: %s | A=Join X=Search",
@@ -1124,25 +1178,60 @@ static void handle_touch(touchPosition *t) {
             break;
         case TAB_CHANNELS: {
             float y = CHAT_TOP + 4;
+
+            /* Touch "Go" button — send if draft exists, else open keyboard */
             if (touch_in(t, BOT_W-48, (int)y, 44, 18)) {
-                char chan[48] = {0};
-                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false, NULL))
-                    if (chan[0]) join_channel(chan);
-            }
-            y += 26;
-            for (int i = 0; i < app.history_count; i++) {
-                if (touch_in(t, 4, (int)y, BOT_W-8, 18)) {
-                    join_channel(app.history[i].name); return;
+                if (app.channel_search[0]) {
+                    join_channel(app.channel_search);
+                    app.channel_search[0] = '\0';
+                } else {
+                    char tmp[48] = {0};
+                    if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                        strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
                 }
-                y += 20; if (y > CHAT_BOT-20) break;
+                return;
             }
-            if (touch_in(t, 4, CHAT_BOT-18, 90, 16)) {
-                app.history_count = 1;
-                strncpy(app.history[0].name, app.channel, 47);
-                app.history[0].name[47] = 0;
-                app.history[0].is_live = false;
-                app.history[0].viewer_count = 0;
-                save_history();
+
+            /* Touch search input box — open keyboard */
+            if (touch_in(t, 2, (int)y, BOT_W-52, 18)) {
+                char tmp[48] = {0};
+                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                    strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
+                return;
+            }
+
+            y += 26;
+
+            /* History item touch */
+            int display_count = app.history_count;
+            if (display_count > 50) display_count = 50;
+
+            for (int i = 0; i < display_count; i++) {
+                if (touch_in(t, 4, (int)y, BOT_W-8, 18)) {
+                    join_channel(app.history[i].name);
+                    return;
+                }
+                y += 20;
+                if (y > CHAT_BOT-20) break;
+            }
+
+            /* Clear History button with confirmation */
+            if (touch_in(t, BOT_W-104, CHAT_BOT-18, 100, 16)) {
+                SwkbdState swkbd;
+                swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, -1);
+                swkbdSetHintText(&swkbd, "Clear all channel history?");
+                swkbdSetButton(&swkbd, SWKBD_BUTTON_LEFT, "Cancel", false);
+                swkbdSetButton(&swkbd, SWKBD_BUTTON_RIGHT, "Clear", true);
+                char dummy[4] = {0};
+                SwkbdButton pressed = swkbdInputText(&swkbd, dummy, sizeof(dummy));
+                if (pressed == SWKBD_BUTTON_RIGHT) {
+                    app.history_count = 1;
+                    strncpy(app.history[0].name, app.channel, 47);
+                    app.history[0].name[47] = 0;
+                    app.history[0].is_live = false;
+                    app.history[0].viewer_count = 0;
+                    save_history();
+                }
             }
             break;
         }
@@ -1190,13 +1279,18 @@ static void handle_buttons(u32 kDown) {
             break;
         case TAB_CHANNELS:
             if (kDown & KEY_DUP)   { if (app.history_sel > 0) app.history_sel--; }
-            if (kDown & KEY_DDOWN) { if (app.history_sel < app.history_count-1) app.history_sel++; }
+            if (kDown & KEY_DDOWN) {
+                int max_sel = app.history_count - 1;
+                if (max_sel > 49) max_sel = 49;  /* Cap at 50 entries */
+                if (app.history_sel < max_sel) app.history_sel++;
+            }
             if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel].name); }
             if (kDown & KEY_X) {
-                char chan[48] = {0};
-                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false, NULL))
-                    if (chan[0]) join_channel(chan);
+                char tmp[48] = {0};
+                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                    strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
             }
+            if (kDown & KEY_B) app.channel_search[0] = '\0';
             break;
         case TAB_SETTINGS:
             break;
@@ -1239,6 +1333,7 @@ int main(void) {
     app.vid_ever_started  = false;
     memset(app.lines,  0, sizeof(app.lines));
     memset(app.input,  0, sizeof(app.input));
+    memset(app.channel_search, 0, sizeof(app.channel_search));
     app.thumb_loaded     = false;
     app.thumb_last_tick  = 0;
     C3D_TexInit(&app.thumb_tex, THUMB_TEX_W, THUMB_TEX_H, GPU_RGBA8);
