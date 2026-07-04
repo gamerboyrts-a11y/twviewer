@@ -19,3 +19,13 @@ build_log.txt
 
 # Cloned reference repos
 reference/
+
+# User config / tokens (runtime-generated, never commit)
+config/
+twitch_token.txt
+twitch_settings.txt
+twitch_channels.txt
+
+# Claude Code project files
+.claude/
+CLAUDE.md
