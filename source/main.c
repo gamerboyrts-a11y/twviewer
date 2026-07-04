@@ -1083,15 +1083,15 @@ static void draw_channels_tab(void) {
         if (y > CHAT_BOT-20) break;
     }
 
-    /* Clear History button moved to bottom-right */
-    draw_rect(BOT_W-104, CHAT_BOT-18, 100, 16, COL_BTN_RED);
-    draw_text(BOT_W-100, CHAT_BOT-16, 0.34f, COL_WHITE, "Clear History");
-
     draw_rect(0, INPUT_BAR_Y, BOT_W, INPUT_BAR_H, COL_INPUT_BG);
     char cur[64];
     snprintf(cur, sizeof(cur), "Now: %s | A=Join X=Search",
              app.channel[0] ? app.channel : "none");
     draw_text(4, INPUT_BAR_Y+6, 0.36f, COL_GRAY, cur);
+
+    /* Clear History button in bottom-right of input bar */
+    draw_rect(BOT_W-104, INPUT_BAR_Y+5, 100, 16, COL_BTN_RED);
+    draw_text(BOT_W-100, INPUT_BAR_Y+7, 0.34f, COL_WHITE, "Clear History");
 }
 
 static void draw_settings_tab(void) {
@@ -1216,7 +1216,7 @@ static void handle_touch(touchPosition *t) {
             }
 
             /* Clear History button with confirmation */
-            if (touch_in(t, BOT_W-104, CHAT_BOT-18, 100, 16)) {
+            if (touch_in(t, BOT_W-104, INPUT_BAR_Y+5, 100, 16)) {
                 SwkbdState swkbd;
                 swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, -1);
                 swkbdSetHintText(&swkbd, "Clear all channel history?");
