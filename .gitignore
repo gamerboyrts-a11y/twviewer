@@ -12,3 +12,10 @@ build/
 *.swp
 Thumbs.db
 .DS_Store
+
+# Logs / scratch
+build_log.txt
+*.log
+
+# Cloned reference repos
+reference/

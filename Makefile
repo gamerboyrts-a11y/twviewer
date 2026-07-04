@@ -37,15 +37,16 @@ ASFLAGS  := -g $(ARCH)
 LDFLAGS  = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 #---------------------------------------------------------------------------------
-# -lz must come AFTER -lcurl
+# ffmpeg for AAC audio decode
 #---------------------------------------------------------------------------------
 LIBS     := -lcitro2d -lcitro3d \
+            -lavcodec -lavutil -lswresample -lx264 -lmp3lame -ldav1d \
             -lcurl -lmbedtls -lmbedx509 -lmbedcrypto \
             -lz \
             -lctru -lm
 
 #---------------------------------------------------------------------------------
-LIBDIRS  := $(CTRULIB) $(PORTLIBS)
+LIBDIRS  := $(TOPDIR)/library $(CTRULIB) $(PORTLIBS)
 
 #---------------------------------------------------------------------------------
 ifneq ($(BUILD),$(notdir $(CURDIR)))

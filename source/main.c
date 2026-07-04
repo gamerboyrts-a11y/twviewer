@@ -23,6 +23,7 @@
 #include <tex3ds.h>
 #include <malloc.h>
 #include <arpa/inet.h>
+#include <math.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -58,7 +59,7 @@
 #define CHAT_BOT       (INPUT_BAR_Y - 1)
 #define CHAT_LEFT      4
 #define LINE_H         20
-#define MAX_LINES      64
+#define MAX_LINES      20
 #define MAX_LINE_LEN   55
 #define VISIBLE_LINES  ((CHAT_BOT - CHAT_TOP) / LINE_H)
 #define MAX_HISTORY    10
@@ -430,7 +431,7 @@ static void irc_poll(void) {
     if (n == MBEDTLS_ERR_SSL_WANT_READ || n == 0) return;
     if (n < 0) { LOG("IRC poll read err %d, reconnecting", n); irc_disconnect(); return; }
     tmp[n] = 0;
-    LOG("IRC rx: %.120s", tmp);
+    // LOG("IRC rx: %.120s", tmp);  /* commented to keep the log small */
     int copy = n;
     if (app.irc_buf_len + copy >= IRC_BUF-1) copy = IRC_BUF-1-app.irc_buf_len;
     memcpy(app.irc_buf + app.irc_buf_len, tmp, copy);
@@ -828,6 +829,22 @@ static void draw_top(void) {
              * even after the polling thread sleeps between segments.
              */
             video_draw_top(0, 0);
+
+            /* Buffering spinner until the first real frame is on screen
+             * (covers Twitch's ~15-25s preroll + download delay). */
+            if (!video_has_picture()) {
+                int phase = (int)((osGetTime() / 100) % 8);
+                for (int i = 0; i < 8; i++) {
+                    float ang = (float)i * (float)M_PI / 4.0f;
+                    float px = TOP_W/2.0f + cosf(ang) * 20.0f;
+                    float py = 104.0f     + sinf(ang) * 20.0f;
+                    int age = (i - phase + 8) % 8;          /* 0 = brightest */
+                    u8 lum = (u8)(255 - age * 26);
+                    C2D_DrawCircleSolid(px, py, 0, 3.5f,
+                        C2D_Color32(lum/2, (u8)(lum/3), lum, 255));
+                }
+                draw_text(TOP_W/2 - 32, 138, 0.40f, COL_GRAY, "Buffering...");
+            }
         } else if (app.thumb_loaded) {
             C2D_DrawImageAt(app.thumb_img, 0, (TOP_H - THUMB_H) / 2.0f,
                             0.5f, NULL, 1.0f, 1.0f);
@@ -1110,7 +1127,9 @@ static void handle_buttons(u32 kDown) {
  * ═══════════════════════════════════════════════════════════ */
 
 int main(void) {
+    osSetSpeedupEnable(true);  /* New3DS 804 MHz — big win for TLS+decode */
     gfxInitDefault();
+    video_mvd_preinit();  /* MVD must init BEFORE citro3d claims GPU */
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
     C2D_Prepare();
@@ -1195,6 +1214,11 @@ int main(void) {
         }
 
         if (app.state == STATE_WATCHING) irc_poll();
+
+        /* pick up fresh stream metadata from the video thread */
+        video_poll_meta(app.stream_title, sizeof(app.stream_title),
+                        app.stream_game,  sizeof(app.stream_game),
+                        &app.viewer_count);
 
         video_upload_frame();
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
