@@ -24,4 +24,4 @@
 
 - [x] 5.1 Build clean with devkitARM (`make`)
 - [x] 5.2 Verify spec scenarios: tap-box compose; pre-filled edit; SEND sends and clears; empty-SEND composes; cancel preserves draft; B clears; draft survives tab switch; channel-join clears draft; logged-out send preserves draft; `%s` in draft renders verbatim; long/multi-byte draft tail-trims cleanly
-- [ ] 5.3 Self-review diff against spec + design, then commit and push (git backup policy)
+- [x] 5.3 Self-review diff against spec + design, then commit and push (git backup policy)

@@ -50,7 +50,10 @@
       "Bash(echo \"exit=$?\")",
       "Bash(cygpath -u 'C:/Users/PC/Downloads/twitchapp')",
       "Bash(/c/devkitPro/msys2/usr/bin/bash -lc \"cd '$\\(cygpath -u 'C:/Users/PC/Downloads/twitchapp'\\)' && make 2>&1\")",
-      "Bash(git commit -m 'feat: chat input box with draft preview and two-step send *)"
+      "Bash(git commit -m 'feat: chat input box with draft preview and two-step send *)",
+      "Bash(openspec new *)",
+      "Bash(/c/devkitPro/msys2/usr/bin/bash -lc \"cd '$\\(cygpath -u 'C:/Users/PC/Downloads/twitchapp'\\)' && make 2>&1 | head -50\")",
+      "Bash(git commit -m 'feat\\(channels\\): refactor history to struct with live status fields *)"
     ]
   },
   "advisorModel": "fable"

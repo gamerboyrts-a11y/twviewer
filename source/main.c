@@ -106,6 +106,11 @@ typedef enum { QUAL_160P=0, QUAL_360P=1, QUAL_480P=2 } VideoQuality;
 static const char *quality_labels[] = {"160p","360p","480p"};
 typedef enum { STATE_WATCHING, STATE_ERROR, STATE_LOGIN_DEVICE } AppState;
 typedef struct { char nick[32]; char text[MAX_LINE_LEN]; } ChatLine;
+typedef struct {
+    char name[48];
+    bool is_live;
+    u32  viewer_count;
+} ChannelHistoryEntry;
 
 /* ── App struct ──────────────────────────────────────────── */
 typedef struct {
@@ -113,9 +118,10 @@ typedef struct {
     char nick[32];
     bool logged_in;
     char channel[48];
-    char history[MAX_HISTORY][48];
+    ChannelHistoryEntry history[MAX_HISTORY];
     int  history_count;
     int  history_sel;
+    int  channels_scroll_offset;
     char stream_title[128];
     char stream_game[64];
     int  viewer_count;
@@ -203,26 +209,43 @@ static void save_history(void) {
     FILE *f = fopen(HISTORY_FILE, "w");
     if (!f) return;
     for (int i = 0; i < app.history_count; i++)
-        fprintf(f, "%s\n", app.history[i]);
+        fprintf(f, "%s\n", app.history[i].name);
     fclose(f);
 }
 
 static void load_history(void) {
     FILE *f = fopen(HISTORY_FILE, "r");
     app.history_count = 0;
-    if (!f) { strcpy(app.history[0], "#xqc"); app.history_count = 1; return; }
+    if (!f) {
+        strcpy(app.history[0].name, "#xqc");
+        app.history[0].is_live = false;
+        app.history[0].viewer_count = 0;
+        app.history_count = 1;
+        return;
+    }
     char line[48];
     while (fgets(line, sizeof(line), f) && app.history_count < MAX_HISTORY) {
         line[strcspn(line, "\r\n")] = 0;
-        if (line[0]) { strncpy(app.history[app.history_count], line, 47); app.history_count++; }
+        if (line[0]) {
+            strncpy(app.history[app.history_count].name, line, 47);
+            app.history[app.history_count].name[47] = 0;
+            app.history[app.history_count].is_live = false;
+            app.history[app.history_count].viewer_count = 0;
+            app.history_count++;
+        }
     }
     fclose(f);
-    if (app.history_count == 0) { strcpy(app.history[0], "#xqc"); app.history_count = 1; }
+    if (app.history_count == 0) {
+        strcpy(app.history[0].name, "#xqc");
+        app.history[0].is_live = false;
+        app.history[0].viewer_count = 0;
+        app.history_count = 1;
+    }
 }
 
 static void history_push(const char *chan) {
     for (int i = 0; i < app.history_count; i++) {
-        if (strcmp(app.history[i], chan) == 0) {
+        if (strcmp(app.history[i].name, chan) == 0) {
             memmove(&app.history[i], &app.history[i+1],
                     (app.history_count-i-1)*sizeof(app.history[0]));
             app.history_count--;
@@ -232,7 +255,10 @@ static void history_push(const char *chan) {
     if (app.history_count >= MAX_HISTORY) app.history_count = MAX_HISTORY-1;
     memmove(&app.history[1], &app.history[0],
             app.history_count*sizeof(app.history[0]));
-    strncpy(app.history[0], chan, 47); app.history[0][47] = 0;
+    strncpy(app.history[0].name, chan, 47);
+    app.history[0].name[47] = 0;
+    app.history[0].is_live = false;
+    app.history[0].viewer_count = 0;
     app.history_count++;
     save_history();
 }
@@ -999,7 +1025,7 @@ static void draw_channels_tab(void) {
     for (int i = 0; i < app.history_count; i++) {
         bool sel = (i == app.history_sel);
         draw_rect(4, y, BOT_W-8, 18, sel ? COL_ROW_SEL : COL_CHAT_BG);
-        draw_text(8, y+3, 0.38f, sel ? COL_YELLOW : COL_WHITE, app.history[i]);
+        draw_text(8, y+3, 0.38f, sel ? COL_YELLOW : COL_WHITE, app.history[i].name);
         draw_rect(BOT_W-22, y+3, 16, 12, COL_BTN);
         draw_text(BOT_W-18, y+4, 0.34f, COL_WHITE, ">");
         y += 20;
@@ -1106,13 +1132,16 @@ static void handle_touch(touchPosition *t) {
             y += 26;
             for (int i = 0; i < app.history_count; i++) {
                 if (touch_in(t, 4, (int)y, BOT_W-8, 18)) {
-                    join_channel(app.history[i]); return;
+                    join_channel(app.history[i].name); return;
                 }
                 y += 20; if (y > CHAT_BOT-20) break;
             }
             if (touch_in(t, 4, CHAT_BOT-18, 90, 16)) {
                 app.history_count = 1;
-                strncpy(app.history[0], app.channel, 47);
+                strncpy(app.history[0].name, app.channel, 47);
+                app.history[0].name[47] = 0;
+                app.history[0].is_live = false;
+                app.history[0].viewer_count = 0;
                 save_history();
             }
             break;
@@ -1162,7 +1191,7 @@ static void handle_buttons(u32 kDown) {
         case TAB_CHANNELS:
             if (kDown & KEY_DUP)   { if (app.history_sel > 0) app.history_sel--; }
             if (kDown & KEY_DDOWN) { if (app.history_sel < app.history_count-1) app.history_sel++; }
-            if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel]); }
+            if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel].name); }
             if (kDown & KEY_X) {
                 char chan[48] = {0};
                 if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false, NULL))
@@ -1206,6 +1235,7 @@ int main(void) {
     app.scroll_offset     = 0;
     app.scroll_locked     = false;
     app.history_sel       = 0;
+    app.channels_scroll_offset = 0;
     app.vid_ever_started  = false;
     memset(app.lines,  0, sizeof(app.lines));
     memset(app.input,  0, sizeof(app.input));
