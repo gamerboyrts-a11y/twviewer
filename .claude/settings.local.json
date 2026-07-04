@@ -37,7 +37,21 @@
       "Bash(cp -r reference/Video_player_for_3DS/library/include/libav* library/include/)",
       "Bash(make clean *)",
       "Read(//Users/dev/**)",
-      "Bash(git -C /Users/dev/workspace-29944f36 log --oneline -10)"
+      "Bash(git -C /Users/dev/workspace-29944f36 log --oneline -10)",
+      "Bash(git commit -m ' *)",
+      "Bash(git commit -m 'Add CLAUDE.md: git backup policy + MVD implementation notes *)",
+      "Bash(gh release *)",
+      "Bash(git commit -m 'README: point FBI QR at latest release, document video/audio features *)",
+      "Bash(openspec instructions *)",
+      "Bash(openspec validate *)",
+      "Bash(openspec status *)",
+      "Read(//c/devkitPro/libctru/include/c2d/**)",
+      "Read(//c/devkitPro/**)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(cygpath -u 'C:/Users/PC/Downloads/twitchapp')",
+      "Bash(/c/devkitPro/msys2/usr/bin/bash -lc \"cd '$\\(cygpath -u 'C:/Users/PC/Downloads/twitchapp'\\)' && make 2>&1\")",
+      "Bash(git commit -m 'feat: chat input box with draft preview and two-step send *)"
     ]
-  }
+  },
+  "advisorModel": "fable"
 }

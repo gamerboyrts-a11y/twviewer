@@ -415,13 +415,15 @@ static void irc_disconnect(void) {
     app.irc_buf_len   = 0;
 }
 
-static void irc_send_msg(const char *text) {
-    if (!app.irc_connected || !g_tls_ok) return;
-    if (!app.logged_in) { chat_push("System","Login to send messages"); return; }
+static bool irc_send_msg(const char *text) {
+    if (!app.irc_connected || !g_tls_ok) return false;
+    if (!app.logged_in) { chat_push("System","Login to send messages"); return false; }
     char msg[256];
     snprintf(msg, sizeof(msg), "PRIVMSG %s :%s\r\n", app.channel, text);
-    mbedtls_ssl_write(&g_ssl, (const unsigned char*)msg, strlen(msg));
+    int ret = mbedtls_ssl_write(&g_ssl, (const unsigned char*)msg, strlen(msg));
+    if (ret <= 0) return false;
     chat_push(app.nick, text);
+    return true;
 }
 
 static void irc_poll(void) {
@@ -465,11 +467,12 @@ static void irc_poll(void) {
  * SOFTWARE KEYBOARD HELPER
  * ═══════════════════════════════════════════════════════════ */
 
-static bool swkbd_get(char *out, size_t len, const char *hint, bool password) {
+static bool swkbd_get(char *out, size_t len, const char *hint, bool password, const char *initial) {
     SwkbdState kb;
     swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, len-1);
     swkbdSetHintText(&kb, hint);
     if (password) swkbdSetPasswordMode(&kb, SWKBD_PASSWORD_HIDE_DELAY);
+    if (initial && initial[0]) swkbdSetInitialText(&kb, initial);
     swkbdSetButton(&kb, SWKBD_BUTTON_LEFT,  "Cancel", false);
     swkbdSetButton(&kb, SWKBD_BUTTON_RIGHT, "OK",     true);
     char tmp[len];
@@ -493,6 +496,7 @@ static void join_channel(const char *chan) {
     app.line_head = 0; app.line_count = 0;
     app.scroll_offset = 0; app.scroll_locked = false;
     memset(app.lines, 0, sizeof(app.lines));
+    app.input[0] = '\0';
 
     strncpy(app.channel, chan, 47); app.channel[47] = 0;
     if (app.channel[0] != '#') {
@@ -932,14 +936,55 @@ static void draw_chat_tab(void) {
 
     draw_rect(0, CHAT_BOT, BOT_W, 1, COL_DIVIDER);
     draw_rect(0, INPUT_BAR_Y, BOT_W, INPUT_BAR_H, COL_INPUT_BG);
+
+    /* Input box */
+    draw_rect(2, INPUT_BAR_Y+2, BOT_W-52, INPUT_BAR_H-4, COL_CHAT_BG);
+    draw_rect(2, INPUT_BAR_Y+2, BOT_W-52, 1, COL_DIVIDER);
+    draw_rect(2, INPUT_BAR_Y+INPUT_BAR_H-2, BOT_W-52, 1, COL_DIVIDER);
+    draw_rect(2, INPUT_BAR_Y+2, 1, INPUT_BAR_H-4, COL_DIVIDER);
+    draw_rect(BOT_W-50, INPUT_BAR_Y+2, 1, INPUT_BAR_H-4, COL_DIVIDER);
+
+    if (app.input[0]) {
+        C2D_Text txt;
+        C2D_TextBuf buf = C2D_TextBufNew(512);
+        C2D_TextFontParse(&txt, app.font, buf, app.input);
+        float w, h;
+        C2D_TextGetDimensions(&txt, 0.38f, 0.38f, &w, &h);
+        const float box_w = BOT_W - 52 - 8;
+        if (w <= box_w) {
+            char disp[140];
+            snprintf(disp, sizeof(disp), "%s_", app.input);
+            draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_WHITE, disp);
+        } else {
+            const char *ellipsis = "..._";
+            C2D_Text ell_txt;
+            C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
+            float ell_w;
+            C2D_TextGetDimensions(&ell_txt, 0.38f, 0.38f, &ell_w, &h);
+            const char *p = app.input;
+            while (*p) {
+                if ((*p & 0xC0) == 0x80) { p++; continue; }
+                C2D_Text suffix_txt;
+                C2D_TextFontParse(&suffix_txt, app.font, buf, p);
+                float suffix_w;
+                C2D_TextGetDimensions(&suffix_txt, 0.38f, 0.38f, &suffix_w, &h);
+                if (ell_w + suffix_w <= box_w) {
+                    char disp[160];
+                    snprintf(disp, sizeof(disp), "...%s_", p);
+                    draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_WHITE, disp);
+                    break;
+                }
+                p++;
+            }
+        }
+        C2D_TextBufDelete(buf);
+    } else {
+        draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_GRAY, "Touch here to chat...");
+    }
+
+    /* SEND button */
     draw_rect(BOT_W-46, INPUT_BAR_Y+2, 44, INPUT_BAR_H-4, COL_BTN);
     draw_text(BOT_W-40, INPUT_BAR_Y+6, 0.38f, COL_WHITE, "SEND");
-    char disp[140];
-    snprintf(disp, sizeof(disp), app.input[0] ? "> %s_" :
-             (app.status_msg[0] ? app.status_msg : "> Tap SEND or press A..."),
-             app.input);
-    draw_text(4, INPUT_BAR_Y+6, 0.38f,
-              app.input[0] ? COL_WHITE : COL_GRAY, disp);
 }
 
 static void draw_channels_tab(void) {
@@ -1025,12 +1070,22 @@ static void handle_touch(touchPosition *t) {
     switch (app.tab) {
         case TAB_CHAT:
             if (touch_in(t, BOT_W-46, INPUT_BAR_Y+2, 44, INPUT_BAR_H-4)) {
-                memset(app.input, 0, sizeof(app.input));
-                if (swkbd_get(app.input, sizeof(app.input), "Send a message", false))
-                    if (app.input[0]) {
-                        irc_send_msg(app.input);
-                        memset(app.input, 0, sizeof(app.input));
+                if (app.input[0]) {
+                    if (irc_send_msg(app.input)) {
+                        app.input[0] = '\0';
                     }
+                } else {
+                    char tmp[128] = {0};
+                    if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                        strncpy(app.input, tmp, sizeof(app.input)-1);
+                }
+                return;
+            }
+            if (touch_in(t, 2, INPUT_BAR_Y+2, BOT_W-52, INPUT_BAR_H-4)) {
+                char tmp[128] = {0};
+                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                    strncpy(app.input, tmp, sizeof(app.input)-1);
+                return;
             }
             if (t->py >= CHAT_TOP && t->py < CHAT_BOT) {
                 int mid = (CHAT_TOP + CHAT_BOT) / 2;
@@ -1045,7 +1100,7 @@ static void handle_touch(touchPosition *t) {
             float y = CHAT_TOP + 4;
             if (touch_in(t, BOT_W-48, (int)y, 44, 18)) {
                 char chan[48] = {0};
-                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false))
+                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false, NULL))
                     if (chan[0]) join_channel(chan);
             }
             y += 26;
@@ -1098,14 +1153,11 @@ static void handle_buttons(u32 kDown) {
                 }
             }
             if (kDown & KEY_A) {
-                memset(app.input, 0, sizeof(app.input));
-                if (swkbd_get(app.input, sizeof(app.input), "Send a message", false))
-                    if (app.input[0]) {
-                        irc_send_msg(app.input);
-                        memset(app.input, 0, sizeof(app.input));
-                    }
+                char tmp[128] = {0};
+                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                    strncpy(app.input, tmp, sizeof(app.input)-1);
             }
-            if (kDown & KEY_B) memset(app.input, 0, sizeof(app.input));
+            if (kDown & KEY_B) app.input[0] = '\0';
             break;
         case TAB_CHANNELS:
             if (kDown & KEY_DUP)   { if (app.history_sel > 0) app.history_sel--; }
@@ -1113,7 +1165,7 @@ static void handle_buttons(u32 kDown) {
             if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel]); }
             if (kDown & KEY_X) {
                 char chan[48] = {0};
-                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false))
+                if (swkbd_get(chan, sizeof(chan), "Enter channel name (no #)", false, NULL))
                     if (chan[0]) join_channel(chan);
             }
             break;

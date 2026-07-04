@@ -37,3 +37,15 @@ Never leave tested changes uncommitted at the end of a session.
   resubmit the unprocessed tail.
 - The last NAL in a PES has no following start code — take ALL remaining
   bytes (a 2-byte truncation here corrupts every keyframe).
+
+## Planning & Review Policy
+
+- For small fixes, implement directly without a full OpenSpec cycle.
+- Only use OpenSpec (/opsx:propose) for large or risky features 
+  (e.g., changes touching video.c, MVD decode, or thread handling).
+- For any adversarial review, always dispatch to the four subagents 
+  in .claude/agents/ (reviewer-correctness, reviewer-regression, 
+  reviewer-scope, reviewer-security). Each subagent has "model: opus" 
+  pinned in its frontmatter — do not substitute Fable or any other 
+  model for these reviews, regardless of what the main session model 
+  is set to.
