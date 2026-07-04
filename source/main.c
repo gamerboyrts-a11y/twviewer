@@ -1073,7 +1073,8 @@ static void draw_channels_tab(void) {
     int display_count = app.history_count;
     if (display_count > 50) display_count = 50;
 
-    for (int i = 0; i < display_count; i++) {
+    /* Apply scroll offset and render visible entries */
+    for (int i = app.channels_scroll_offset; i < display_count; i++) {
         bool sel = (i == app.history_sel);
         draw_rect(4, y, BOT_W-8, 18, sel ? COL_ROW_SEL : COL_CHAT_BG);
         draw_text(8, y+3, 0.38f, sel ? COL_YELLOW : COL_WHITE, app.history[i].name);
@@ -1218,10 +1219,11 @@ static void handle_touch(touchPosition *t) {
             /* Clear History button with confirmation */
             if (touch_in(t, BOT_W-104, INPUT_BAR_Y+5, 100, 16)) {
                 SwkbdState swkbd;
-                swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, -1);
+                swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 0);
                 swkbdSetHintText(&swkbd, "Clear all channel history?");
-                swkbdSetButton(&swkbd, SWKBD_BUTTON_LEFT, "Cancel", false);
-                swkbdSetButton(&swkbd, SWKBD_BUTTON_RIGHT, "Clear", true);
+                swkbdSetButton(&swkbd, SWKBD_BUTTON_LEFT, "No", false);
+                swkbdSetButton(&swkbd, SWKBD_BUTTON_RIGHT, "Yes", true);
+                swkbdSetFeatures(&swkbd, SWKBD_FIXED_WIDTH);
                 char dummy[4] = {0};
                 SwkbdButton pressed = swkbdInputText(&swkbd, dummy, sizeof(dummy));
                 if (pressed == SWKBD_BUTTON_RIGHT) {
@@ -1278,11 +1280,24 @@ static void handle_buttons(u32 kDown) {
             if (kDown & KEY_B) app.input[0] = '\0';
             break;
         case TAB_CHANNELS:
-            if (kDown & KEY_DUP)   { if (app.history_sel > 0) app.history_sel--; }
+            if (kDown & KEY_DUP)   {
+                if (app.history_sel > 0) {
+                    app.history_sel--;
+                    /* Scroll up if selection goes above visible area */
+                    if (app.history_sel < app.channels_scroll_offset)
+                        app.channels_scroll_offset = app.history_sel;
+                }
+            }
             if (kDown & KEY_DDOWN) {
                 int max_sel = app.history_count - 1;
                 if (max_sel > 49) max_sel = 49;  /* Cap at 50 entries */
-                if (app.history_sel < max_sel) app.history_sel++;
+                if (app.history_sel < max_sel) {
+                    app.history_sel++;
+                    /* Scroll down if selection goes below visible area */
+                    int visible_rows = (CHAT_BOT - 20 - (CHAT_TOP + 66)) / 20;
+                    if (app.history_sel >= app.channels_scroll_offset + visible_rows)
+                        app.channels_scroll_offset = app.history_sel - visible_rows + 1;
+                }
             }
             if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel].name); }
             if (kDown & KEY_X) {
