@@ -59,7 +59,7 @@ This project uses the following tools and libraries:
 
 ## License
 
-This project's code is provided as-is for educational and personal use.
+MIT License - free to use, modify, and distribute.
 
 **Third-party components:**
 - FFmpeg libraries: LGPL 2.1+ (prebuilt by [Core-2-Extreme](https://github.com/Core-2-Extreme/Video_player_for_3DS))
