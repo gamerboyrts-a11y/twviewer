@@ -70,6 +70,10 @@ MIT License - free to use, modify, and distribute.
 - stb_image: Public domain / MIT
 - libctru, citro2d/3d: zlib License
 
+## Disclaimer
+
+TwViewer is an independent project and is not affiliated with, endorsed by, or sponsored by Twitch Interactive, Inc. "Twitch" is a trademark of Twitch Interactive, Inc.
+
 ## Donation
 
 Support this project with a BTC donation if you'd like to help. I'd really appreciate any contribution. Thank you.
