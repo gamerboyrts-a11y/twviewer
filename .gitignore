@@ -29,3 +29,6 @@ twitch_channels.txt
 # Claude Code project files
 .claude/
 CLAUDE.md
+
+# OpenSpec planning artifacts (local only)
+openspec/
