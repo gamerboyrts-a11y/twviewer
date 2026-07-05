@@ -31,7 +31,7 @@
 #include "stb_image.h"
 
 /* ── App defines ─────────────────────────────────────────── */
-#define CLIENT_ID       "kimne78kx3ncx6brgo4mv6wki5h1ko"
+#define CLIENT_ID       "l8ec56m4drzmzbq2vh6nmmz6hehcp4"
 #define DEFAULT_CHANNEL "xqc"
 #define TOKEN_FILE      "/config/twitch_token.txt"
 #define SETTINGS_FILE   "/config/twitch_settings.txt"
@@ -738,7 +738,7 @@ static void dcf_poll_tick(void) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
         if (curl_easy_perform(curl) == CURLE_OK)
-            json_get_string(ubuf.data,"login",nick,sizeof(nick));
+            json_get_string(ubuf.data, "login", nick, sizeof(nick));
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(curl);
         free(ubuf.data);
