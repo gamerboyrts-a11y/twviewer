@@ -57,7 +57,16 @@ This project uses the following tools and libraries:
 - **[curl](https://curl.se/)** — HTTP client library
 - **[stb_image](https://github.com/nothings/stb)** — single-header image loading library
 
-Special thanks to the devkitPro team and the 3DS homebrew community.
+## License
+
+This project's code is provided as-is for educational and personal use.
+
+**Third-party components:**
+- FFmpeg libraries: LGPL 2.1+ (prebuilt by [Core-2-Extreme](https://github.com/Core-2-Extreme/Video_player_for_3DS))
+- mbedTLS: Apache License 2.0
+- curl: MIT-style license
+- stb_image: Public domain / MIT
+- libctru, citro2d/3d: zlib License
 
 ## Donation
 
