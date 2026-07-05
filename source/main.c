@@ -193,6 +193,28 @@ static void draw_text(float x, float y, float sz, u32 col, const char *s) {
     C2D_DrawText(&t, C2D_WithColor, x, y, 0.5f, sz, sz, col);
 }
 
+static void draw_text_with_glow(float x, float y, float sz, u32 glow_col, u32 main_col, const char *s) {
+    C2D_Text t;
+    C2D_TextFontParse(&t, app.font, app.tbuf, s);
+    C2D_TextOptimize(&t);
+    /* Square-pattern glow: 8 offsets for stronger visibility */
+    C2D_DrawText(&t, C2D_WithColor, x+1, y,   0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x-1, y,   0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x,   y+1, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x,   y-1, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x+1, y+1, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x+1, y-1, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x-1, y+1, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x-1, y-1, 0.5f, sz, sz, glow_col);
+    /* Second pass with offset +2 for extra glow */
+    C2D_DrawText(&t, C2D_WithColor, x+2, y,   0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x-2, y,   0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x,   y+2, 0.5f, sz, sz, glow_col);
+    C2D_DrawText(&t, C2D_WithColor, x,   y-2, 0.5f, sz, sz, glow_col);
+    /* Main text on top */
+    C2D_DrawText(&t, C2D_WithColor, x, y, 0.5f, sz, sz, main_col);
+}
+
 static void draw_rect(float x, float y, float w, float h, u32 col) {
     C2D_DrawRectSolid(x, y, 0, w, h, col);
 }
@@ -901,17 +923,10 @@ static void draw_top(void) {
         snprintf(info2, sizeof(info2), "%s",
                  app.stream_title[0] ? app.stream_title : "No stream info");
         snprintf(vc, sizeof(vc), "Viewers: %d", app.viewer_count);
-        draw_text(8,         TOP_H-46, 0.42f, COL_YELLOW, info1);
-        draw_text(8,         TOP_H-30, 0.38f, COL_WHITE,  info2);
-        draw_text(TOP_W-110, TOP_H-46, 0.36f, COL_CYAN,   vc);
-        C2D_DrawCircleSolid(TOP_W-18, TOP_H-14, 0, 6,
-            app.irc_connected ? COL_RED : COL_GRAY);
+        draw_text_with_glow(8,         TOP_H-46, 0.42f, C2D_Color32(0,0,0,150), COL_YELLOW, info1);
+        draw_text_with_glow(8,         TOP_H-30, 0.38f, C2D_Color32(0,0,0,150), COL_WHITE,  info2);
+        draw_text_with_glow(TOP_W-110, TOP_H-46, 0.36f, C2D_Color32(0,0,0,150), COL_CYAN,   vc);
         draw_text(4, TOP_H-14, 0.34f, COL_GRAY, "SELECT: hide");
-    } else {
-        C2D_DrawCircleSolid(TOP_W-14, 10, 0, 5,
-            app.irc_connected ? COL_RED : COL_GRAY);
-        if (app.irc_connected)
-            draw_text(TOP_W-90, 3, 0.30f, COL_GRAY, "SELECT: info");
     }
 }
 
@@ -1101,17 +1116,17 @@ static void draw_channels_tab(void) {
 
 static void draw_settings_tab(void) {
     float y = CHAT_TOP + 6;
-    draw_text(4, y, 0.40f, COL_YELLOW, "LOGIN"); y += 16;
+    draw_text(4, y, 0.40f, COL_YELLOW, "LOGIN"); y += 18;
     if (app.logged_in) {
         char lbl[48]; snprintf(lbl, sizeof(lbl), "Logged in: %s", app.nick);
-        draw_text(4, y, 0.36f, COL_GREEN, lbl); y += 14;
-        draw_rect(4, y, 80, 16, COL_BTN_RED);
-        draw_text(8, y+3, 0.34f, COL_WHITE, "Logout"); y += 20;
+        draw_text(4, y, 0.36f, COL_GREEN, lbl); y += 20;
+        draw_rect(4, y, 100, 20, COL_BTN_RED);
+        draw_text(10, y+4, 0.38f, COL_WHITE, "Logout"); y += 26;
     } else {
-        draw_text(4, y, 0.34f, COL_GRAY, "Not logged in (read-only)"); y += 14;
-        draw_rect(4, y, BOT_W-8, 16, COL_BTN);
-        draw_text(8, y+3, 0.34f, COL_WHITE, "Login at twitch.tv/activate");
-        y += 20;
+        draw_text(4, y, 0.34f, COL_RED, "Not logged in (read-only)"); y += 20;
+        draw_rect(4, y, BOT_W-8, 20, COL_BTN);
+        draw_text(10, y+4, 0.36f, COL_WHITE, "Login at twitch.tv/activate");
+        y += 26;
     }
     draw_rect(0, y, BOT_W, 1, COL_DIVIDER); y += 6;
     draw_text(4, y, 0.40f, COL_YELLOW, "DISPLAY"); y += 14;
@@ -1247,13 +1262,13 @@ static void handle_touch(touchPosition *t) {
             break;
         }
         case TAB_SETTINGS: {
-            float y = CHAT_TOP + 22;
+            float y = CHAT_TOP + 24;
             if (app.logged_in) {
-                if (touch_in(t, 4, (int)y, 80, 16)) do_logout();
+                if (touch_in(t, 4, (int)y, 100, 20)) do_logout();
             } else {
-                if (touch_in(t, 4, (int)y, BOT_W-8, 16)) do_device_login_start();
+                if (touch_in(t, 4, (int)y, BOT_W-8, 20)) do_device_login_start();
             }
-            y += 48;
+            y += 52;
             if (touch_in(t, BOT_W-54, (int)y-2, 50, 16)) {
                 app.show_overlay = !app.show_overlay; save_settings();
             }
