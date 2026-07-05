@@ -1,7 +1,20 @@
+<div align="center">
+
+<img src="app_icon.png" alt="Twitch3DS Icon" width="128" height="128">
+
 # Twitch3DS
 
-Twitch client for New 3DS / New 2DS XL homebrew — live video (MVD hardware
-decode), AAC audio, and IRC chat.
+**Twitch client for New 3DS / New 2DS XL**
+
+Live video (MVD hardware decode) • AAC audio • IRC chat
+
+</div>
+
+## Screenshots
+
+| Top Screen | Chat | Settings | Buffering |
+|------------|------|----------|-----------|
+| ![Top Screen](screenshot/topscreen.png) | ![Chat](screenshot/chat.png) | ![Settings](screenshot/setting.png) | ![Buffering](screenshot/buffering.png) |
 
 ## Install via FBI QR Code
 
@@ -19,6 +32,8 @@ https://github.com/gamerboyrts-a11y/twitch3ds/releases/latest/download/twitch3ds
 Alternatively, download `twitch3ds.3dsx` from the
 [latest release](https://github.com/gamerboyrts-a11y/twitch3ds/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
+
+**After installation:** find app at `sd:/3ds/twitch3ds.3dsx` — launch from Homebrew Launcher.
 
 ## Features
 
