@@ -167,6 +167,7 @@ typedef struct {
 
     /* Video state tracking — separate from IRC */
     bool vid_ever_started;
+    bool channel_loading;
 } App;
 
 static App app;
@@ -541,10 +542,12 @@ static void join_channel(const char *chan) {
     if (irc_connect()) {
         app.state = STATE_WATCHING;
         const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
+        app.channel_loading = true;
         video_start(ch, app.oauth, CLIENT_ID);
         app.vid_ever_started = true;
     } else {
         app.state = STATE_ERROR;
+        app.channel_loading = false;
     }
     app.tab = TAB_CHAT;
 }
@@ -1138,6 +1141,11 @@ static void draw_bot(void) {
         case TAB_CHANNELS: draw_channels_tab(); break;
         case TAB_SETTINGS: draw_settings_tab(); break;
     }
+
+    /* Loading indicator overlay */
+    if (app.channel_loading) {
+        draw_text(BOT_W/2 - 60, BOT_H/2, 0.5f, COL_YELLOW, "Loading stream...");
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1346,6 +1354,7 @@ int main(void) {
     app.history_sel       = 0;
     app.channels_scroll_offset = 0;
     app.vid_ever_started  = false;
+    app.channel_loading   = false;
     memset(app.lines,  0, sizeof(app.lines));
     memset(app.input,  0, sizeof(app.input));
     memset(app.channel_search, 0, sizeof(app.channel_search));
@@ -1413,6 +1422,12 @@ int main(void) {
                         &app.viewer_count);
 
         video_upload_frame();
+
+        /* Clear loading indicator once first frame ready */
+        if (app.channel_loading && video_has_picture()) {
+            app.channel_loading = false;
+        }
+
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
         draw_top();
         draw_bot();

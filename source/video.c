@@ -1028,6 +1028,7 @@ void video_start(const char *channel, const char *oauth_pass,
     strncpy(V.client_id, client_id,  sizeof(V.client_id)-1);
     V.hls_url[0] = 0; V.last_seg[0] = 0;
     V.has_frame = false; V.offline = false; V.active = true;
+    V.tex_valid = false;  /* Clear old frame so loading indicator works */
     V.vid_out_w = OUT_W; V.vid_out_h = OUT_H;
     V.meta_title[0] = 0; V.meta_game[0] = 0;
     V.meta_viewers = 0; V.meta_dirty = false;
