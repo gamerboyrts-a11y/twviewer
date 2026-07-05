@@ -6,6 +6,8 @@
 
 **Twitch viewer for New 3DS / New 2DS XL**
 
+Unofficial client for Twitch streaming platform.
+
 Live video (MVD hardware decode) • AAC audio • IRC chat
 
 </div>
