@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="app_icon.png" alt="Twitch3DS Icon" width="128" height="128">
+<img src="icon.png" alt="TwViewer Icon" width="128" height="128">
 
-# Twitch3DS
+# TwViewer
 
-**Twitch client for New 3DS / New 2DS XL**
+**Twitch viewer for New 3DS / New 2DS XL**
 
 Live video (MVD hardware decode) • AAC audio • IRC chat
 
@@ -21,19 +21,19 @@ Live video (MVD hardware decode) • AAC audio • IRC chat
 Open this page on your phone or PC, then scan the QR code with FBI on your 3DS
 (FBI → Remote Install → Scan QR Code). Always points to the latest release.
 
-![QR Code](https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/gamerboyrts-a11y/twitch3ds/releases/latest/download/twitch3ds.3dsx)
+![QR Code](https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.3dsx)
 
 Or enter the URL manually:
 
 ```
-https://github.com/gamerboyrts-a11y/twitch3ds/releases/latest/download/twitch3ds.3dsx
+https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.3dsx
 ```
 
-Alternatively, download `twitch3ds.3dsx` from the
-[latest release](https://github.com/gamerboyrts-a11y/twitch3ds/releases/latest)
+Alternatively, download `twviewer.3dsx` from the
+[latest release](https://github.com/gamerboyrts-a11y/twviewer/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
-**After installation:** find app at `sd:/3ds/twitch3ds.3dsx` — launch from Homebrew Launcher.
+**After installation:** find app at `sd:/3ds/twviewer.3dsx` — launch from Homebrew Launcher.
 
 ## Features
 

@@ -10,11 +10,11 @@ TOPDIR ?= $(CURDIR)
 include $(DEVKITARM)/3ds_rules
 
 #---------------------------------------------------------------------------------
-APP_TITLE   := Twitch3DS
-APP_DESC    := Twitch client for New 3DS
+APP_TITLE   := TwViewer
+APP_DESC    := Twitch viewer for New 3DS
 APP_AUTHOR  := gamerboyrts
 
-TARGET      := twitch3ds
+TARGET      := twviewer
 BUILD       := build
 SOURCES     := source
 DATA        := data
