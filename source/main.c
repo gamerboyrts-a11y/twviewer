@@ -31,7 +31,8 @@
 #include "stb_image.h"
 
 /* ── App defines ─────────────────────────────────────────── */
-#define CLIENT_ID       "l8ec56m4drzmzbq2vh6nmmz6hehcp4"
+#define CLIENT_ID       "kimne78kx3ncx6brgo4mv6wki5h1ko"  /* Twilight - for video playback */
+#define CLIENT_ID_OAUTH "l8ec56m4drzmzbq2vh6nmmz6hehcp4"  /* Custom - for OAuth login */
 #define DEFAULT_CHANNEL "xqc"
 #define TOKEN_FILE      "/config/twitch_token.txt"
 #define SETTINGS_FILE   "/config/twitch_settings.txt"
@@ -622,7 +623,7 @@ static void do_device_login_start(void) {
     app.state = STATE_LOGIN_DEVICE;
 
     char post[256];
-    snprintf(post, sizeof(post), "client_id=%s&scopes=%s", CLIENT_ID, DCF_SCOPES);
+    snprintf(post, sizeof(post), "client_id=%s&scopes=%s", CLIENT_ID_OAUTH, DCF_SCOPES);
 
     char *resp = http_post(DCF_DEVICE_URL, post);
     if (!resp) {
@@ -687,7 +688,7 @@ static void dcf_poll_tick(void) {
         "&scopes=%s"
         "&device_code=%s"
         "&grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Adevice_code",
-        CLIENT_ID, DCF_SCOPES, app.dcf.device_code);
+        CLIENT_ID_OAUTH, DCF_SCOPES, app.dcf.device_code);
 
     char *resp = http_post(DCF_TOKEN_URL, post);
     if (!resp) { set_status("DCF: poll failed, retrying..."); return; }
@@ -727,7 +728,7 @@ static void dcf_poll_tick(void) {
         ubuf.data = malloc(512); ubuf.cap = 512; ubuf.data[0] = '\0';
         char auth_hdr[DCF_TOKEN_LEN+32], cid_hdr[64];
         snprintf(auth_hdr, sizeof(auth_hdr), "Authorization: Bearer %s", access_token);
-        snprintf(cid_hdr,  sizeof(cid_hdr),  "Client-Id: %s", CLIENT_ID);
+        snprintf(cid_hdr,  sizeof(cid_hdr),  "Client-Id: %s", CLIENT_ID_OAUTH);
         struct curl_slist *hdrs = NULL;
         hdrs = curl_slist_append(hdrs, auth_hdr);
         hdrs = curl_slist_append(hdrs, cid_hdr);
