@@ -15,8 +15,8 @@
 /* sizing */
 #define OUT_W    400
 #define OUT_H    240
-#define TEX_W    512
-#define TEX_H    256
+#define TEX_W    1024
+#define TEX_H    512
 #define NAL_MAX  (256*1024)
 #define PES_MAX  (512*1024)
 #define APES_MAX (64*1024)
@@ -400,21 +400,20 @@ static void fetch_stream_meta(void) {
 }
 
 
-/* Lowest-bandwidth variant URL from master m3u8; fills out_w/out_h. */
+/* Target 360p variant URL from master m3u8; fills out_w/out_h.
+ * Picks variant closest to 640x360 resolution. */
 static char *m3u8_lowest_variant(const char *body, const char *base_url,
                                  int *out_w, int *out_h) {
-    long best_bw = 0x7fffffff;
+    const int target_w = 640, target_h = 360;
+    long best_dist = 0x7fffffff;
     char best_url[1024] = {0};
     int best_w = 0, best_h = 0;
     const char *p = body;
 
     while ((p = strstr(p, "#EXT-X-STREAM-INF:")) != NULL) {
-        long bw = 0;
         int rw = 0, rh = 0;
-        const char *bwp = strstr(p, "BANDWIDTH=");
         const char *nl  = strchr(p, '\n');
         if (!nl) break;
-        if (bwp && bwp < nl) bw = atol(bwp + 10);
         const char *rp = strstr(p, "RESOLUTION=");
         if (rp && rp < nl) sscanf(rp + 11, "%dx%d", &rw, &rh);
 
@@ -423,13 +422,18 @@ static char *m3u8_lowest_variant(const char *body, const char *base_url,
         if (*nl && *nl != '#') {
             const char *eol = nl;
             while (*eol && *eol != '\r' && *eol != '\n') eol++;
-            if (bw < best_bw && eol > nl) {
-                size_t l = (size_t)(eol - nl);
-                if (l >= sizeof(best_url)) l = sizeof(best_url)-1;
-                best_bw = bw;
-                memcpy(best_url, nl, l);
-                best_url[l] = 0;
-                best_w = rw; best_h = rh;
+            if (rw > 0 && rh > 0 && eol > nl) {
+                /* distance from target resolution */
+                long dw = rw - target_w, dh = rh - target_h;
+                long dist = dw*dw + dh*dh;
+                if (dist < best_dist) {
+                    size_t l = (size_t)(eol - nl);
+                    if (l >= sizeof(best_url)) l = sizeof(best_url)-1;
+                    best_dist = dist;
+                    memcpy(best_url, nl, l);
+                    best_url[l] = 0;
+                    best_w = rw; best_h = rh;
+                }
             }
         }
         p = nl;
