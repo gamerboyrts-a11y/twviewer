@@ -36,6 +36,7 @@ static struct {
     C2D_Image         img;
     MVDSTD_Config     cfg;
     int  vid_out_w, vid_out_h;   /* 16-aligned MVD buffer dims (stride) */
+    int  quality;                /* 0=160p, 1=360p, 2=480p */
     char channel[48];
     char oauth[128];
     char client_id[48];
@@ -56,6 +57,8 @@ static int  s_upload_count = 0;
 static int  s_draw_count = 0;
 static bool s_got_real_frame = false;
 static u64  s_pace_tick = 0;     /* 30fps pacing target (system ticks) */
+static int  s_max_nal_size = 0;  /* max NAL size observed (for keyframe tracking) */
+static int  s_incomplete_count = 0;  /* INCOMPLETEPROCESSING hits */
 
 
 /* bearer token helper — strips "PASS " / "oauth:" prefix */
@@ -400,11 +403,16 @@ static void fetch_stream_meta(void) {
 }
 
 
-/* Target 360p variant URL from master m3u8; fills out_w/out_h.
- * Picks variant closest to 640x360 resolution. */
+/* Pick HLS variant URL from master m3u8 based on quality setting; fills out_w/out_h.
+ * quality: 0=160p (284x160), 1=360p (640x360), 2=480p (852x480) */
 static char *m3u8_lowest_variant(const char *body, const char *base_url,
-                                 int *out_w, int *out_h) {
-    const int target_w = 640, target_h = 360;
+                                 int *out_w, int *out_h, int quality) {
+    int target_w, target_h;
+    switch (quality) {
+        case 0:  target_w = 284;  target_h = 160;  break;  /* 160p */
+        case 2:  target_w = 852;  target_h = 480;  break;  /* 480p */
+        default: target_w = 640;  target_h = 360;  break;  /* 360p */
+    }
     long best_dist = 0x7fffffff;
     char best_url[1024] = {0};
     int best_w = 0, best_h = 0;
@@ -529,8 +537,20 @@ static void ts_reset(void) {
  * corner bytes detect real frame writes; INCOMPLETEPROCESSING keyframe
  * tails are resubmitted so the reference picture stays intact. */
 static void nal_feed(const u8 *data, int len) {
-    if (len <= 0 || len + 3 > NAL_MAX) return;
+    if (len <= 0) return;
+    if (len + 3 > NAL_MAX) {
+        LOG("nal: OVERSIZED len=%d (max=%d) quality=%d type=%d — SKIPPED",
+            len, NAL_MAX - 3, V.quality, data[0] & 0x1f);
+        return;
+    }
     int type = data[0] & 0x1f;
+
+    /* track max NAL size for quality profiling */
+    if (len > s_max_nal_size) {
+        s_max_nal_size = len;
+        if (type == 5)  /* keyframe */
+            LOG("nal: new max keyframe size=%d quality=%d", len, V.quality);
+    }
 
     /* mvdstdProcessVideoFrame wants the 3-byte 00 00 01 prefix */
     V.nalbuf[0] = 0x00;
@@ -554,6 +574,10 @@ static void nal_feed(const u8 *data, int len) {
         while (r == MVD_STATUS_INCOMPLETEPROCESSING &&
                po.remaining_size > 0 && po.remaining_size < left &&
                guard++ < 4) {
+            s_incomplete_count++;
+            if (s_incomplete_count == 1 || (s_incomplete_count % 100) == 0)
+                LOG("nal: INCOMPLETEPROCESSING #%d quality=%d len=%d",
+                    s_incomplete_count, V.quality, len);
             pos  += left - po.remaining_size;
             left  = po.remaining_size;
             r = mvdstdProcessVideoFrame(V.nalbuf + pos, left, 0, &po);
@@ -704,7 +728,13 @@ static void ts_packet(const u8 *p) {
         if (pusi) TS.pes_valid = true;
         if (TS.pes_valid) {
             int copy = plen;
-            if (TS.pes_len+copy > PES_MAX) copy = PES_MAX-TS.pes_len;
+            if (TS.pes_len+copy > PES_MAX) {
+                LOG("ts: PES OVERFLOW vid_pid=%d pes_len=%d+%d>%d quality=%d — DISCARDED",
+                    pid, TS.pes_len, copy, PES_MAX, V.quality);
+                TS.pes_len = 0;
+                TS.pes_valid = false;
+                return;
+            }
             if (copy > 0) {
                 memcpy(TS.pes+TS.pes_len, pay, copy);
                 TS.pes_len += copy;
@@ -715,7 +745,13 @@ static void ts_packet(const u8 *p) {
         if (pusi) TS.apes_valid = true;
         if (TS.apes_valid) {
             int copy = plen;
-            if (TS.apes_len+copy > APES_MAX) copy = APES_MAX-TS.apes_len;
+            if (TS.apes_len+copy > APES_MAX) {
+                LOG("ts: APES OVERFLOW aud_pid=%d apes_len=%d+%d>%d quality=%d — DISCARDED",
+                    pid, TS.apes_len, copy, APES_MAX, V.quality);
+                TS.apes_len = 0;
+                TS.apes_valid = false;
+                return;
+            }
             if (copy > 0) {
                 memcpy(TS.apes+TS.apes_len, pay, copy);
                 TS.apes_len += copy;
@@ -868,7 +904,7 @@ static void vid_thread(void *arg) {
     }
 
     int in_w = 0, in_h = 0;
-    char *var = m3u8_lowest_variant(master, V.hls_url, &in_w, &in_h);
+    char *var = m3u8_lowest_variant(master, V.hls_url, &in_w, &in_h, V.quality);
     free(master);
     if (!var) {
         LOG("vid: no variant in master m3u8");
@@ -1024,12 +1060,13 @@ void video_exit(void) {
 }
 
 void video_start(const char *channel, const char *oauth_pass,
-                 const char *client_id) {
+                 const char *client_id, int quality) {
     video_stop();
     audio_reset();
     strncpy(V.channel,   channel,    sizeof(V.channel)-1);
     strncpy(V.oauth,     oauth_pass, sizeof(V.oauth)-1);
     strncpy(V.client_id, client_id,  sizeof(V.client_id)-1);
+    V.quality = quality;
     V.hls_url[0] = 0; V.last_seg[0] = 0;
     V.has_frame = false; V.offline = false; V.active = true;
     V.tex_valid = false;  /* Clear old frame so loading indicator works */
@@ -1039,6 +1076,8 @@ void video_start(const char *channel, const char *oauth_pass,
     s_frame_count = 0; s_upload_count = 0; s_draw_count = 0;
     s_got_real_frame = false;
     s_pace_tick = 0;
+    s_max_nal_size = 0;
+    s_incomplete_count = 0;
     segq_drain();
     /* both pipeline threads run on core 2 (New3DS extra core) */
     s_dec_thread = threadCreate(dec_thread_fn, NULL, 64*1024, 0x19, 2, false);
@@ -1050,6 +1089,8 @@ void video_start(const char *channel, const char *oauth_pass,
 void video_stop(void) {
     if (!V.active) return;
     V.active = false;
+    LOG("vid: video_stop called");
+    /* Wait for threads to exit before cleanup */
     if (V.thread) {
         threadJoin(V.thread, U64_MAX);
         threadFree(V.thread);
@@ -1060,7 +1101,30 @@ void video_stop(void) {
         threadFree(s_dec_thread);
         s_dec_thread = NULL;
     }
+    /* NOW safe to drain — decoder thread exited */
     segq_drain();
+    /* Clean up curl handles to prevent stale connection state */
+    if (s_curl_pl) {
+        curl_easy_cleanup(s_curl_pl);
+        s_curl_pl = NULL;
+    }
+    if (s_curl_seg) {
+        curl_easy_cleanup(s_curl_seg);
+        s_curl_seg = NULL;
+    }
+    /* CRITICAL: Reset MVD hardware to prevent corruption on restart */
+    if (V.mvd_ok) {
+        mvdstdExit();
+        Result r = mvdstdInit(MVDMODE_VIDEOPROCESSING, MVD_INPUT_H264,
+            MVD_OUTPUT_BGR565, MVD_DEFAULT_WORKBUF_SIZE, NULL);
+        if (R_FAILED(r)) {
+            LOG("vid: mvdstdInit reinit FAILED 0x%lx", r);
+            V.mvd_ok = false;
+        } else {
+            LOG("vid: MVD reset OK");
+        }
+    }
+    LOG("vid: video_stop complete");
     /* tex_valid intentionally NOT cleared — hold last frame on screen */
 }
 

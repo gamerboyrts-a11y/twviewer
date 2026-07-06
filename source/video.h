@@ -12,8 +12,9 @@ bool video_mvd_preinit(void);
 bool video_init(void);
 void video_exit(void);
 
-/* channel = bare name (no '#').  oauth_pass = full "PASS oauth:xxx" string. */
-void video_start(const char *channel, const char *oauth_pass, const char *client_id);
+/* channel = bare name (no '#').  oauth_pass = full "PASS oauth:xxx" string.
+ * quality: 0=160p, 1=360p, 2=480p */
+void video_start(const char *channel, const char *oauth_pass, const char *client_id, int quality);
 void video_stop(void);
 
 /* Call BEFORE C3D_FrameBegin to upload any pending decoded frame. */

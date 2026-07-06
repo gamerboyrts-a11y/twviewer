@@ -172,7 +172,7 @@ typedef struct {
 } App;
 
 static App app;
-bool g_logging_enabled = false;
+bool g_logging_enabled = true;
 
 /* ═══════════════════════════════════════════════════════════
  * UTILITY / DRAW HELPERS
@@ -542,6 +542,10 @@ static bool swkbd_get(char *out, size_t len, const char *hint, bool password, co
 static void join_channel(const char *chan) {
     /* Stop old video before starting a new channel */
     video_stop();
+    /* Brief delay for hardware cleanup after repeated quality switches */
+    if (app.vid_ever_started) {
+        svcSleepThread(150000000LL);  /* 150ms */
+    }
     app.vid_ever_started = false;
 
     irc_disconnect();
@@ -567,7 +571,7 @@ static void join_channel(const char *chan) {
         app.state = STATE_WATCHING;
         const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
         app.channel_loading = true;
-        video_start(ch, app.oauth, CLIENT_ID);
+        video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
         app.vid_ever_started = true;
     } else {
         app.state = STATE_ERROR;
@@ -1276,7 +1280,20 @@ static void handle_touch(touchPosition *t) {
             y += 32;
             for (int i = 0; i < 3; i++)
                 if (touch_in(t, 4+i*56, (int)y, 52, 16)) {
-                    app.quality = (VideoQuality)i; save_settings();
+                    if (app.quality != (VideoQuality)i) {
+                        app.quality = (VideoQuality)i;
+                        save_settings();
+                        /* Auto-restart stream if watching */
+                        if (video_is_active() && app.channel[0]) {
+                            const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
+                            video_stop();
+                            /* Brief delay for hardware cleanup */
+                            svcSleepThread(100000000LL);  /* 100ms */
+                            app.channel_loading = true;
+                            video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
+                            set_status("Quality changed — stream restarted");
+                        }
+                    }
                 }
             break;
         }
@@ -1402,7 +1419,7 @@ int main(void) {
     if (irc_connect()) {
         app.state = STATE_WATCHING;
         const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
-        video_start(ch, app.oauth, CLIENT_ID);
+        video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
         app.vid_ever_started = true;
     } else {
         app.state = STATE_ERROR;
