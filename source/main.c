@@ -172,6 +172,7 @@ typedef struct {
 } App;
 
 static App app;
+bool g_logging_enabled = false;
 
 /* ═══════════════════════════════════════════════════════════
  * UTILITY / DRAW HELPERS

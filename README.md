@@ -47,6 +47,11 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 - Channel history
 - New 3DS / New 2DS XL only (uses the MVD decoder and second CPU core)
 
+## Known Issues & Workarounds
+
+- **Loading delays:** During stream startup, ads may be running on the server side. Wait for video to appear — this is normal Twitch behavior.
+- **System chat bug:** If you see system messages appearing in chat incorrectly, log out and log back in using the Device Code flow. This resets the IRC connection and fixes chat display.
+
 ## Credits
 
 This project uses the following tools and libraries:
