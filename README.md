@@ -41,10 +41,12 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 For best performance, configure these settings via the **Rosalina menu** (hold **L + Down + Select** while in Homebrew Launcher or in-game):
 
-1. **System configuration** → **New 3DS CPU** → **Clock+L2** (enables the extra CPU cores)
+1. **System configuration** → **New 3DS CPU** → select **Clock+L2** (not "Clock" or "Off")
+   - When enabled, you'll see **Clock+L2** highlighted
+   - This enables the extra CPU cores that TwViewer needs for video decode and download threads
 2. (Optional) **Debugger options** → disable any active debuggers to free up resources
 
-You only need to set these once — they persist across reboots. TwViewer uses the New 3DS extra cores for video decode and download threads.
+You only need to set these once — they persist across reboots. If you experience lag or stuttering, double-check that **Clock+L2** is selected (not just "Clock").
 
 ## Features
 
