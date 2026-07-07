@@ -39,14 +39,20 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 ## Recommended System Settings
 
-For best performance, configure these settings via the **Rosalina menu** (hold **L + Down + Select** while in Homebrew Launcher or in-game):
+TwViewer needs the New 3DS running at full speed. Open the **Rosalina menu** (hold **L + Down + Select**) and go to **New 3DS menu**. When everything is set correctly, the first two entries read exactly like this:
 
-1. **System configuration** → **New 3DS CPU** → select **Clock+L2** (not "Clock" or "Off")
-   - When enabled, you'll see **Clock+L2** highlighted
-   - This enables the extra CPU cores that TwViewer needs for video decode and download threads
-2. (Optional) **Debugger options** → disable any active debuggers to free up resources
+<div align="center">
+<img src="screenshot/rosalina-menu.jpg" alt="Rosalina New 3DS menu with the correct settings — entries read 'Disable L2 cache' and 'Set clock rate to 268MHz'" width="420">
+</div>
 
-You only need to set these once — they persist across reboots. If you experience lag or stuttering, double-check that **Clock+L2** is selected (not just "Clock").
+- **"Disable L2 cache"** — the label offers to *disable* it, which means the L2 cache is currently **enabled** ✓
+- **"Set clock rate to 268MHz"** — the label offers to *slow down*, which means the CPU is currently at the full **804MHz** ✓
+
+The menu shows the action, not the state. If you instead see *"Enable L2 cache"* or *"Set clock rate to 804MHz"*, select those entries to switch to the fast settings, then press B to exit.
+
+To make this permanent across reboots, set it in the Luma3DS config instead: power off, hold **Select** while powering on, and set **New 3DS CPU** to **Clock+L2**.
+
+If you experience lag or stuttering, re-check these settings first.
 
 ## Features
 
