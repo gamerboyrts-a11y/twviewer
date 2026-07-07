@@ -37,23 +37,6 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 **After installation:** find app at `sd:/3ds/twviewer.3dsx` — launch from Homebrew Launcher.
 
-## Recommended System Settings
-
-TwViewer needs the New 3DS running at full speed. Open the **Rosalina menu** (hold **L + Down + Select**) and go to **New 3DS menu**. When everything is set correctly, the first two entries read exactly like this:
-
-<div align="center">
-<img src="screenshot/rosalina-menu.jpg" alt="Rosalina New 3DS menu with the correct settings — entries read 'Disable L2 cache' and 'Set clock rate to 268MHz'" width="420">
-</div>
-
-- **"Disable L2 cache"** — the label offers to *disable* it, which means the L2 cache is currently **enabled** ✓
-- **"Set clock rate to 268MHz"** — the label offers to *slow down*, which means the CPU is currently at the full **804MHz** ✓
-
-The menu shows the action, not the state. If you instead see *"Enable L2 cache"* or *"Set clock rate to 804MHz"*, select those entries to switch to the fast settings, then press B to exit.
-
-To make this permanent across reboots, set it in the Luma3DS config instead: power off, hold **Select** while powering on, and set **New 3DS CPU** to **Clock+L2**.
-
-If you experience lag or stuttering, re-check these settings first.
-
 ## Features
 
 - Live stream video on the top screen (New 3DS MVD hardware H.264 decode)
@@ -71,6 +54,10 @@ If you experience lag or stuttering, re-check these settings first.
 - **Quality buttons may need a few taps:** when switching between 160p and 360p, the button doesn't always register on the first tap. Keep tapping until the button highlights and the stream restarts.
 - **Some channels don't render correctly:** channels that don't offer Low Latency mode (e.g. GamesDoneQuick, some marathons/events) may display incorrectly — garbled frames or frozen picture. This happens because Normal Latency streams use widely-spaced keyframes that the 3DS decoder can't recover from. Most regular streamers offer Low Latency and work fine.
 - **Video may pause mid-stream:** if the picture stops, just wait — it resumes automatically after a bit. This is normal (usually server-side ads or a short network hiccup); no need to restart the app.
+- **Laggy or stuttering video:** TwViewer enables the New 3DS speedup (804MHz + L2 cache) automatically at launch, so no setup is needed. If video is still laggy, verify the speedup took: open the **Rosalina menu** (hold **L + Down + Select**) → **New 3DS menu** while TwViewer is running. It should look like the screenshot below — *"Disable L2 cache"* and *"Set clock rate to 268MHz"* (the labels show the action, so these mean L2 is ON and the CPU is at 804MHz). If it reads *"Set clock rate to 804MHz"* instead, the speedup failed — select it manually, or set **New 3DS CPU** to **Clock+L2** in the Luma3DS config (hold Select at boot).
+
+  <img src="screenshot/rosalina-menu.jpg" alt="Rosalina New 3DS menu showing the correct state — entries read 'Disable L2 cache' and 'Set clock rate to 268MHz'" width="380">
+
 - **Loading delays:** During stream startup, ads may be running on the server side. Wait for video to appear — this is normal Twitch behavior.
 - **System chat bug:** If you see system messages appearing in chat incorrectly, log out and log back in using the Device Code flow. This resets the IRC connection and fixes chat display.
 
