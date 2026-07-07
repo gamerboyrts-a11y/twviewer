@@ -22,6 +22,12 @@
 #define APES_MAX (64*1024)
 #define SEG_MAX  (4*1024*1024)
 
+/* segment buffer pool: queue slots + 1 in-flight download.  Fixed pool
+ * kills the per-segment malloc/realloc churn that fragmented the heap
+ * and crashed repeated channel switches at 360p+. */
+#define SEG_QUEUE_DEPTH 2
+#define SEG_POOL_N (SEG_QUEUE_DEPTH + 1)
+
 
 /* state */
 static struct {
@@ -36,7 +42,7 @@ static struct {
     C2D_Image         img;
     MVDSTD_Config     cfg;
     int  vid_out_w, vid_out_h;   /* 16-aligned MVD buffer dims (stride) */
-    int  quality;                /* 0=160p, 1=360p, 2=480p */
+    int  quality;                /* 0=160p, 1=360p */
     char channel[48];
     char oauth[128];
     char client_id[48];
@@ -70,14 +76,16 @@ static const char *bearer_token(void) {
 }
 
 
-/* curl write callback */
+/* curl write callback (growable buffer, geometric growth) */
 typedef struct { char *d; size_t len, cap; } Buf;
 static size_t cb(void *p, size_t s, size_t n, void *u) {
     Buf *b = u; size_t in = s*n;
     if (b->len+in+1 > b->cap) {
-        char *t = realloc(b->d, b->cap+in+4096);
+        size_t ncap = b->cap ? b->cap : 4096;
+        while (ncap < b->len+in+1) ncap *= 2;
+        char *t = realloc(b->d, ncap);
         if (!t) return 0;
-        b->d = t; b->cap += in+4096;
+        b->d = t; b->cap = ncap;
     }
     memcpy(b->d+b->len, p, in); b->len += in; b->d[b->len] = 0;
     return in;
@@ -404,15 +412,12 @@ static void fetch_stream_meta(void) {
 
 
 /* Pick HLS variant URL from master m3u8 based on quality setting; fills out_w/out_h.
- * quality: 0=160p (284x160), 1=360p (640x360), 2=480p (852x480) */
+ * quality: 0=160p (284x160), 1=360p (640x360) */
 static char *m3u8_lowest_variant(const char *body, const char *base_url,
                                  int *out_w, int *out_h, int quality) {
     int target_w, target_h;
-    switch (quality) {
-        case 0:  target_w = 284;  target_h = 160;  break;  /* 160p */
-        case 2:  target_w = 852;  target_h = 480;  break;  /* 480p */
-        default: target_w = 640;  target_h = 360;  break;  /* 360p */
-    }
+    if (quality == 0) { target_w = 284; target_h = 160; }   /* 160p */
+    else              { target_w = 640; target_h = 360; }   /* 360p */
     long best_dist = 0x7fffffff;
     char best_url[1024] = {0};
     int best_w = 0, best_h = 0;
@@ -763,19 +768,51 @@ static void ts_packet(const u8 *p) {
 
 /* ═════════════════ segment pipeline ═════════════════ */
 
-/* Download a segment (persistent handle; the CDN connection stays open). */
+/* Fixed pool of SEG_MAX buffers — allocated once in video_init, reused
+ * for the app lifetime.  Slots guarded by s_segq_lock. */
+static u8  *s_seg_pool[SEG_POOL_N];
+static bool s_seg_used[SEG_POOL_N];
+static LightLock s_segq_lock;
+
+static int seg_acquire(void) {
+    int idx = -1;
+    LightLock_Lock(&s_segq_lock);
+    for (int i = 0; i < SEG_POOL_N; i++)
+        if (!s_seg_used[i]) { s_seg_used[i] = true; idx = i; break; }
+    LightLock_Unlock(&s_segq_lock);
+    return idx;
+}
+
+static void seg_release(int idx) {
+    LightLock_Lock(&s_segq_lock);
+    s_seg_used[idx] = false;
+    LightLock_Unlock(&s_segq_lock);
+}
+
+/* fixed-capacity write target — a segment bigger than SEG_MAX aborts the
+ * transfer instead of growing the buffer */
+typedef struct { u8 *d; size_t len, cap; } FixBuf;
+static size_t cb_fixed(void *p, size_t s, size_t n, void *u) {
+    FixBuf *b = u; size_t in = s*n;
+    if (b->len + in > b->cap) return 0;
+    memcpy(b->d + b->len, p, in); b->len += in;
+    return in;
+}
+
+/* Download a segment into a pool slot (persistent handle; the CDN
+ * connection stays open).  Returns slot index or -1. */
 static CURL *s_curl_seg = NULL;
-static u8 *download_segment(const char *url, size_t *out_len) {
+static int download_segment(const char *url, size_t *out_len) {
     *out_len = 0;
     if (!s_curl_seg) s_curl_seg = curl_easy_init();
     CURL *c = s_curl_seg;
-    if (!c) return NULL;
-    Buf b = {malloc(SEG_MAX/4), 0, SEG_MAX/4};
-    if (!b.d) return NULL;
-    b.d[0] = 0;
+    if (!c) return -1;
+    int slot = seg_acquire();
+    if (slot < 0) { LOG("vid: seg pool exhausted"); return -1; }
+    FixBuf b = { s_seg_pool[slot], 0, SEG_MAX };
     curl_easy_reset(c);
     curl_easy_setopt(c, CURLOPT_URL, url);
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, cb);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, cb_fixed);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
@@ -786,11 +823,11 @@ static u8 *download_segment(const char *url, size_t *out_len) {
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     if (code != 200 || b.len < 188) {
         LOG("vid: seg dl code=%ld curl=%d len=%d", code, (int)res, (int)b.len);
-        free(b.d);
-        return NULL;
+        seg_release(slot);
+        return -1;
     }
     *out_len = b.len;
-    return (u8*)b.d;
+    return slot;
 }
 
 /* Demux + decode one downloaded segment (decoder thread). */
@@ -818,18 +855,16 @@ static void decode_segment(const u8 *data, size_t len) {
         LOG("vid: demux found no video PID (pmt=%d)", TS.pmt_pid);
 }
 
-/* 2-slot queue: downloader produces, decoder consumes. */
-#define SEG_QUEUE_DEPTH 2
-static struct { u8 *data; size_t len; } s_segq[SEG_QUEUE_DEPTH];
+/* 2-slot queue of pool slot indices: downloader produces, decoder consumes. */
+static struct { int slot; size_t len; } s_segq[SEG_QUEUE_DEPTH];
 static int s_segq_count = 0;
-static LightLock s_segq_lock;
 static Thread s_dec_thread = NULL;
 
-static bool segq_push(u8 *data, size_t len) {
+static bool segq_push(int slot, size_t len) {
     bool ok = false;
     LightLock_Lock(&s_segq_lock);
     if (s_segq_count < SEG_QUEUE_DEPTH) {
-        s_segq[s_segq_count].data = data;
+        s_segq[s_segq_count].slot = slot;
         s_segq[s_segq_count].len = len;
         s_segq_count++;
         ok = true;
@@ -838,17 +873,17 @@ static bool segq_push(u8 *data, size_t len) {
     return ok;
 }
 
-static u8 *segq_pop(size_t *out_len) {
-    u8 *d = NULL;
+static int segq_pop(size_t *out_len) {
+    int slot = -1;
     LightLock_Lock(&s_segq_lock);
     if (s_segq_count > 0) {
-        d = s_segq[0].data;
+        slot = s_segq[0].slot;
         *out_len = s_segq[0].len;
         for (int i = 1; i < s_segq_count; i++) s_segq[i-1] = s_segq[i];
         s_segq_count--;
     }
     LightLock_Unlock(&s_segq_lock);
-    return d;
+    return slot;
 }
 
 static bool segq_full(void) {
@@ -860,7 +895,8 @@ static bool segq_full(void) {
 
 static void segq_drain(void) {
     LightLock_Lock(&s_segq_lock);
-    for (int i = 0; i < s_segq_count; i++) free(s_segq[i].data);
+    for (int i = 0; i < s_segq_count; i++)
+        s_seg_used[s_segq[i].slot] = false;
     s_segq_count = 0;
     LightLock_Unlock(&s_segq_lock);
 }
@@ -871,13 +907,13 @@ static void dec_thread_fn(void *arg) {
     (void)arg;
     while (V.active) {
         size_t len = 0;
-        u8 *d = segq_pop(&len);
-        if (!d) {
+        int slot = segq_pop(&len);
+        if (slot < 0) {
             svcSleepThread(15000000LL);
             continue;
         }
-        decode_segment(d, len);
-        free(d);
+        decode_segment(s_seg_pool[slot], len);
+        seg_release(slot);
     }
     LOG("vid: decode thread exit");
 }
@@ -974,18 +1010,18 @@ static void vid_thread(void *arg) {
         if (!V.active) { free(seg); break; }
 
         size_t slen = 0;
-        u8 *sdata = download_segment(seg, &slen);
+        int slot = download_segment(seg, &slen);
         strncpy(V.last_seg, seg, sizeof(V.last_seg)-1);
         V.last_seg[sizeof(V.last_seg)-1] = 0;
         free(seg);
 
-        if (sdata) {
+        if (slot >= 0) {
             seg_count++;
             if (seg_count <= 3 || (seg_count % 30) == 0)
                 LOG("vid: seg #%d (%d KB) q=%d", seg_count,
                     (int)(slen / 1024), s_segq_count);
-            if (!segq_push(sdata, slen))
-                free(sdata);
+            if (!segq_push(slot, slen))
+                seg_release(slot);
         }
     }
     LOG("vid: download thread exit");
@@ -1020,6 +1056,14 @@ bool video_init(void) {
     if (!V.outbuf || !V.nalbuf || !V.stgbuf) {
         LOG("vid: linearAlloc FAILED");
         return false;
+    }
+    for (int i = 0; i < SEG_POOL_N; i++) {
+        s_seg_pool[i] = malloc(SEG_MAX);
+        s_seg_used[i] = false;
+        if (!s_seg_pool[i]) {
+            LOG("vid: seg pool alloc FAILED (slot %d)", i);
+            return false;
+        }
     }
     memset(V.outbuf, 0, TEX_W * TEX_H * 2);
     memset(V.stgbuf, 0, TEX_W * TEX_H * 2);
@@ -1056,6 +1100,9 @@ void video_exit(void) {
     if (V.outbuf)  { linearFree(V.outbuf); V.outbuf = NULL; }
     if (V.nalbuf)  { linearFree(V.nalbuf); V.nalbuf = NULL; }
     if (V.stgbuf)  { linearFree(V.stgbuf); V.stgbuf = NULL; }
+    for (int i = 0; i < SEG_POOL_N; i++) {
+        free(s_seg_pool[i]); s_seg_pool[i] = NULL; s_seg_used[i] = false;
+    }
     C3D_TexDelete(&V.tex);
 }
 
