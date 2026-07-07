@@ -34,7 +34,7 @@ https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.3
 Alternatively, download `twviewer.3dsx` from the
 [latest release](https://github.com/gamerboyrts-a11y/twviewer/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
-- Install via FBI (QR code): `sd:/3ds/twviewer/twviewer.3dsx`
+- Install via FBI (QR code): `sd:/3ds/twviewer/twviewer.3dsx` 
 ** The following configuration files are used:** 
 - TOKEN_FILE — `/config/twitch_token.txt`
 - SETTINGS_FILE — `/config/twitch_settings.txt`
