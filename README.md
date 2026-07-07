@@ -49,6 +49,7 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 ## Known Issues & Workarounds
 
+- **Crash when switching channels repeatedly:** Changing channels too many times in one session can crash the app. Workaround: after a few channel switches, exit and restart TwViewer before opening another stream.
 - **Loading delays:** During stream startup, ads may be running on the server side. Wait for video to appear — this is normal Twitch behavior.
 - **System chat bug:** If you see system messages appearing in chat incorrectly, log out and log back in using the Device Code flow. This resets the IRC connection and fixes chat display.
 
