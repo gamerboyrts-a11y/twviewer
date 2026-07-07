@@ -103,8 +103,9 @@
 
 /* ── Types ───────────────────────────────────────────────── */
 typedef enum { TAB_CHAT=0, TAB_CHANNELS=1, TAB_SETTINGS=2 } TabID;
-typedef enum { QUAL_160P=0, QUAL_360P=1, QUAL_480P=2 } VideoQuality;
-static const char *quality_labels[] = {"160p","360p","480p"};
+typedef enum { QUAL_160P=0, QUAL_360P=1 } VideoQuality;
+#define QUAL_COUNT 2
+static const char *quality_labels[] = {"160p","360p"};
 typedef enum { STATE_WATCHING, STATE_ERROR, STATE_LOGIN_DEVICE } AppState;
 typedef struct { char nick[32]; char text[MAX_LINE_LEN]; } ChatLine;
 typedef struct {
@@ -172,7 +173,7 @@ typedef struct {
 } App;
 
 static App app;
-bool g_logging_enabled = false;
+bool g_logging_enabled = true;
 
 /* ═══════════════════════════════════════════════════════════
  * UTILITY / DRAW HELPERS
@@ -308,7 +309,11 @@ static void load_settings(void) {
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         if      (strncmp(line,"channel:", 8) == 0) strncpy(app.channel, line+8, 47);
-        else if (strncmp(line,"quality:", 8) == 0) app.quality = (VideoQuality)atoi(line+8);
+        else if (strncmp(line,"quality:", 8) == 0) {
+            int q = atoi(line+8);   /* old builds saved 2 = 480p; clamp */
+            if (q < 0 || q >= QUAL_COUNT) q = QUAL_360P;
+            app.quality = (VideoQuality)q;
+        }
         else if (strncmp(line,"overlay:", 8) == 0) app.show_overlay = atoi(line+8) != 0;
     }
     fclose(f);
@@ -542,6 +547,10 @@ static bool swkbd_get(char *out, size_t len, const char *hint, bool password, co
 static void join_channel(const char *chan) {
     /* Stop old video before starting a new channel */
     video_stop();
+    /* Brief delay for hardware cleanup after repeated quality switches */
+    if (app.vid_ever_started) {
+        svcSleepThread(150000000LL);  /* 150ms */
+    }
     app.vid_ever_started = false;
 
     irc_disconnect();
@@ -567,7 +576,7 @@ static void join_channel(const char *chan) {
         app.state = STATE_WATCHING;
         const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
         app.channel_loading = true;
-        video_start(ch, app.oauth, CLIENT_ID);
+        video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
         app.vid_ever_started = true;
     } else {
         app.state = STATE_ERROR;
@@ -1138,7 +1147,7 @@ static void draw_settings_tab(void) {
               app.show_overlay ? " ON" : " OFF");
     y += 18;
     draw_text(4, y, 0.36f, COL_WHITE, "Video Quality:"); y += 14;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < QUAL_COUNT; i++) {
         u32 bg = (app.quality == (VideoQuality)i) ? COL_PURPLE : COL_GRAY_DK;
         draw_rect(4+i*56, y, 52, 16, bg);
         draw_text(8+i*56, y+3, 0.36f, COL_WHITE, quality_labels[i]);
@@ -1274,9 +1283,22 @@ static void handle_touch(touchPosition *t) {
                 app.show_overlay = !app.show_overlay; save_settings();
             }
             y += 32;
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < QUAL_COUNT; i++)
                 if (touch_in(t, 4+i*56, (int)y, 52, 16)) {
-                    app.quality = (VideoQuality)i; save_settings();
+                    if (app.quality != (VideoQuality)i) {
+                        app.quality = (VideoQuality)i;
+                        save_settings();
+                        /* Auto-restart stream if watching */
+                        if (video_is_active() && app.channel[0]) {
+                            const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
+                            video_stop();
+                            /* Brief delay for hardware cleanup */
+                            svcSleepThread(100000000LL);  /* 100ms */
+                            app.channel_loading = true;
+                            video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
+                            set_status("Quality changed — stream restarted");
+                        }
+                    }
                 }
             break;
         }
@@ -1402,7 +1424,7 @@ int main(void) {
     if (irc_connect()) {
         app.state = STATE_WATCHING;
         const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
-        video_start(ch, app.oauth, CLIENT_ID);
+        video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
         app.vid_ever_started = true;
     } else {
         app.state = STATE_ERROR;

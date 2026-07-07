@@ -15,12 +15,18 @@
 /* sizing */
 #define OUT_W    400
 #define OUT_H    240
-#define TEX_W    512
-#define TEX_H    256
+#define TEX_W    1024
+#define TEX_H    512
 #define NAL_MAX  (256*1024)
 #define PES_MAX  (512*1024)
 #define APES_MAX (64*1024)
 #define SEG_MAX  (4*1024*1024)
+
+/* segment buffer pool: queue slots + 1 in-flight download.  Fixed pool
+ * kills the per-segment malloc/realloc churn that fragmented the heap
+ * and crashed repeated channel switches at 360p+. */
+#define SEG_QUEUE_DEPTH 2
+#define SEG_POOL_N (SEG_QUEUE_DEPTH + 1)
 
 
 /* state */
@@ -36,6 +42,7 @@ static struct {
     C2D_Image         img;
     MVDSTD_Config     cfg;
     int  vid_out_w, vid_out_h;   /* 16-aligned MVD buffer dims (stride) */
+    int  quality;                /* 0=160p, 1=360p */
     char channel[48];
     char oauth[128];
     char client_id[48];
@@ -56,6 +63,8 @@ static int  s_upload_count = 0;
 static int  s_draw_count = 0;
 static bool s_got_real_frame = false;
 static u64  s_pace_tick = 0;     /* 30fps pacing target (system ticks) */
+static int  s_max_nal_size = 0;  /* max NAL size observed (for keyframe tracking) */
+static int  s_incomplete_count = 0;  /* INCOMPLETEPROCESSING hits */
 
 
 /* bearer token helper — strips "PASS " / "oauth:" prefix */
@@ -67,14 +76,16 @@ static const char *bearer_token(void) {
 }
 
 
-/* curl write callback */
+/* curl write callback (growable buffer, geometric growth) */
 typedef struct { char *d; size_t len, cap; } Buf;
 static size_t cb(void *p, size_t s, size_t n, void *u) {
     Buf *b = u; size_t in = s*n;
     if (b->len+in+1 > b->cap) {
-        char *t = realloc(b->d, b->cap+in+4096);
+        size_t ncap = b->cap ? b->cap : 4096;
+        while (ncap < b->len+in+1) ncap *= 2;
+        char *t = realloc(b->d, ncap);
         if (!t) return 0;
-        b->d = t; b->cap += in+4096;
+        b->d = t; b->cap = ncap;
     }
     memcpy(b->d+b->len, p, in); b->len += in; b->d[b->len] = 0;
     return in;
@@ -400,21 +411,22 @@ static void fetch_stream_meta(void) {
 }
 
 
-/* Lowest-bandwidth variant URL from master m3u8; fills out_w/out_h. */
+/* Pick HLS variant URL from master m3u8 based on quality setting; fills out_w/out_h.
+ * quality: 0=160p (284x160), 1=360p (640x360) */
 static char *m3u8_lowest_variant(const char *body, const char *base_url,
-                                 int *out_w, int *out_h) {
-    long best_bw = 0x7fffffff;
+                                 int *out_w, int *out_h, int quality) {
+    int target_w, target_h;
+    if (quality == 0) { target_w = 284; target_h = 160; }   /* 160p */
+    else              { target_w = 640; target_h = 360; }   /* 360p */
+    long best_dist = 0x7fffffff;
     char best_url[1024] = {0};
     int best_w = 0, best_h = 0;
     const char *p = body;
 
     while ((p = strstr(p, "#EXT-X-STREAM-INF:")) != NULL) {
-        long bw = 0;
         int rw = 0, rh = 0;
-        const char *bwp = strstr(p, "BANDWIDTH=");
         const char *nl  = strchr(p, '\n');
         if (!nl) break;
-        if (bwp && bwp < nl) bw = atol(bwp + 10);
         const char *rp = strstr(p, "RESOLUTION=");
         if (rp && rp < nl) sscanf(rp + 11, "%dx%d", &rw, &rh);
 
@@ -423,13 +435,18 @@ static char *m3u8_lowest_variant(const char *body, const char *base_url,
         if (*nl && *nl != '#') {
             const char *eol = nl;
             while (*eol && *eol != '\r' && *eol != '\n') eol++;
-            if (bw < best_bw && eol > nl) {
-                size_t l = (size_t)(eol - nl);
-                if (l >= sizeof(best_url)) l = sizeof(best_url)-1;
-                best_bw = bw;
-                memcpy(best_url, nl, l);
-                best_url[l] = 0;
-                best_w = rw; best_h = rh;
+            if (rw > 0 && rh > 0 && eol > nl) {
+                /* distance from target resolution */
+                long dw = rw - target_w, dh = rh - target_h;
+                long dist = dw*dw + dh*dh;
+                if (dist < best_dist) {
+                    size_t l = (size_t)(eol - nl);
+                    if (l >= sizeof(best_url)) l = sizeof(best_url)-1;
+                    best_dist = dist;
+                    memcpy(best_url, nl, l);
+                    best_url[l] = 0;
+                    best_w = rw; best_h = rh;
+                }
             }
         }
         p = nl;
@@ -525,8 +542,20 @@ static void ts_reset(void) {
  * corner bytes detect real frame writes; INCOMPLETEPROCESSING keyframe
  * tails are resubmitted so the reference picture stays intact. */
 static void nal_feed(const u8 *data, int len) {
-    if (len <= 0 || len + 3 > NAL_MAX) return;
+    if (len <= 0) return;
+    if (len + 3 > NAL_MAX) {
+        LOG("nal: OVERSIZED len=%d (max=%d) quality=%d type=%d — SKIPPED",
+            len, NAL_MAX - 3, V.quality, data[0] & 0x1f);
+        return;
+    }
     int type = data[0] & 0x1f;
+
+    /* track max NAL size for quality profiling */
+    if (len > s_max_nal_size) {
+        s_max_nal_size = len;
+        if (type == 5)  /* keyframe */
+            LOG("nal: new max keyframe size=%d quality=%d", len, V.quality);
+    }
 
     /* mvdstdProcessVideoFrame wants the 3-byte 00 00 01 prefix */
     V.nalbuf[0] = 0x00;
@@ -550,6 +579,10 @@ static void nal_feed(const u8 *data, int len) {
         while (r == MVD_STATUS_INCOMPLETEPROCESSING &&
                po.remaining_size > 0 && po.remaining_size < left &&
                guard++ < 4) {
+            s_incomplete_count++;
+            if (s_incomplete_count == 1 || (s_incomplete_count % 100) == 0)
+                LOG("nal: INCOMPLETEPROCESSING #%d quality=%d len=%d",
+                    s_incomplete_count, V.quality, len);
             pos  += left - po.remaining_size;
             left  = po.remaining_size;
             r = mvdstdProcessVideoFrame(V.nalbuf + pos, left, 0, &po);
@@ -700,7 +733,13 @@ static void ts_packet(const u8 *p) {
         if (pusi) TS.pes_valid = true;
         if (TS.pes_valid) {
             int copy = plen;
-            if (TS.pes_len+copy > PES_MAX) copy = PES_MAX-TS.pes_len;
+            if (TS.pes_len+copy > PES_MAX) {
+                LOG("ts: PES OVERFLOW vid_pid=%d pes_len=%d+%d>%d quality=%d — DISCARDED",
+                    pid, TS.pes_len, copy, PES_MAX, V.quality);
+                TS.pes_len = 0;
+                TS.pes_valid = false;
+                return;
+            }
             if (copy > 0) {
                 memcpy(TS.pes+TS.pes_len, pay, copy);
                 TS.pes_len += copy;
@@ -711,7 +750,13 @@ static void ts_packet(const u8 *p) {
         if (pusi) TS.apes_valid = true;
         if (TS.apes_valid) {
             int copy = plen;
-            if (TS.apes_len+copy > APES_MAX) copy = APES_MAX-TS.apes_len;
+            if (TS.apes_len+copy > APES_MAX) {
+                LOG("ts: APES OVERFLOW aud_pid=%d apes_len=%d+%d>%d quality=%d — DISCARDED",
+                    pid, TS.apes_len, copy, APES_MAX, V.quality);
+                TS.apes_len = 0;
+                TS.apes_valid = false;
+                return;
+            }
             if (copy > 0) {
                 memcpy(TS.apes+TS.apes_len, pay, copy);
                 TS.apes_len += copy;
@@ -723,19 +768,51 @@ static void ts_packet(const u8 *p) {
 
 /* ═════════════════ segment pipeline ═════════════════ */
 
-/* Download a segment (persistent handle; the CDN connection stays open). */
+/* Fixed pool of SEG_MAX buffers — allocated once in video_init, reused
+ * for the app lifetime.  Slots guarded by s_segq_lock. */
+static u8  *s_seg_pool[SEG_POOL_N];
+static bool s_seg_used[SEG_POOL_N];
+static LightLock s_segq_lock;
+
+static int seg_acquire(void) {
+    int idx = -1;
+    LightLock_Lock(&s_segq_lock);
+    for (int i = 0; i < SEG_POOL_N; i++)
+        if (!s_seg_used[i]) { s_seg_used[i] = true; idx = i; break; }
+    LightLock_Unlock(&s_segq_lock);
+    return idx;
+}
+
+static void seg_release(int idx) {
+    LightLock_Lock(&s_segq_lock);
+    s_seg_used[idx] = false;
+    LightLock_Unlock(&s_segq_lock);
+}
+
+/* fixed-capacity write target — a segment bigger than SEG_MAX aborts the
+ * transfer instead of growing the buffer */
+typedef struct { u8 *d; size_t len, cap; } FixBuf;
+static size_t cb_fixed(void *p, size_t s, size_t n, void *u) {
+    FixBuf *b = u; size_t in = s*n;
+    if (b->len + in > b->cap) return 0;
+    memcpy(b->d + b->len, p, in); b->len += in;
+    return in;
+}
+
+/* Download a segment into a pool slot (persistent handle; the CDN
+ * connection stays open).  Returns slot index or -1. */
 static CURL *s_curl_seg = NULL;
-static u8 *download_segment(const char *url, size_t *out_len) {
+static int download_segment(const char *url, size_t *out_len) {
     *out_len = 0;
     if (!s_curl_seg) s_curl_seg = curl_easy_init();
     CURL *c = s_curl_seg;
-    if (!c) return NULL;
-    Buf b = {malloc(SEG_MAX/4), 0, SEG_MAX/4};
-    if (!b.d) return NULL;
-    b.d[0] = 0;
+    if (!c) return -1;
+    int slot = seg_acquire();
+    if (slot < 0) { LOG("vid: seg pool exhausted"); return -1; }
+    FixBuf b = { s_seg_pool[slot], 0, SEG_MAX };
     curl_easy_reset(c);
     curl_easy_setopt(c, CURLOPT_URL, url);
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, cb);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, cb_fixed);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
@@ -746,11 +823,11 @@ static u8 *download_segment(const char *url, size_t *out_len) {
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     if (code != 200 || b.len < 188) {
         LOG("vid: seg dl code=%ld curl=%d len=%d", code, (int)res, (int)b.len);
-        free(b.d);
-        return NULL;
+        seg_release(slot);
+        return -1;
     }
     *out_len = b.len;
-    return (u8*)b.d;
+    return slot;
 }
 
 /* Demux + decode one downloaded segment (decoder thread). */
@@ -778,18 +855,16 @@ static void decode_segment(const u8 *data, size_t len) {
         LOG("vid: demux found no video PID (pmt=%d)", TS.pmt_pid);
 }
 
-/* 2-slot queue: downloader produces, decoder consumes. */
-#define SEG_QUEUE_DEPTH 2
-static struct { u8 *data; size_t len; } s_segq[SEG_QUEUE_DEPTH];
+/* 2-slot queue of pool slot indices: downloader produces, decoder consumes. */
+static struct { int slot; size_t len; } s_segq[SEG_QUEUE_DEPTH];
 static int s_segq_count = 0;
-static LightLock s_segq_lock;
 static Thread s_dec_thread = NULL;
 
-static bool segq_push(u8 *data, size_t len) {
+static bool segq_push(int slot, size_t len) {
     bool ok = false;
     LightLock_Lock(&s_segq_lock);
     if (s_segq_count < SEG_QUEUE_DEPTH) {
-        s_segq[s_segq_count].data = data;
+        s_segq[s_segq_count].slot = slot;
         s_segq[s_segq_count].len = len;
         s_segq_count++;
         ok = true;
@@ -798,17 +873,17 @@ static bool segq_push(u8 *data, size_t len) {
     return ok;
 }
 
-static u8 *segq_pop(size_t *out_len) {
-    u8 *d = NULL;
+static int segq_pop(size_t *out_len) {
+    int slot = -1;
     LightLock_Lock(&s_segq_lock);
     if (s_segq_count > 0) {
-        d = s_segq[0].data;
+        slot = s_segq[0].slot;
         *out_len = s_segq[0].len;
         for (int i = 1; i < s_segq_count; i++) s_segq[i-1] = s_segq[i];
         s_segq_count--;
     }
     LightLock_Unlock(&s_segq_lock);
-    return d;
+    return slot;
 }
 
 static bool segq_full(void) {
@@ -820,7 +895,8 @@ static bool segq_full(void) {
 
 static void segq_drain(void) {
     LightLock_Lock(&s_segq_lock);
-    for (int i = 0; i < s_segq_count; i++) free(s_segq[i].data);
+    for (int i = 0; i < s_segq_count; i++)
+        s_seg_used[s_segq[i].slot] = false;
     s_segq_count = 0;
     LightLock_Unlock(&s_segq_lock);
 }
@@ -831,13 +907,13 @@ static void dec_thread_fn(void *arg) {
     (void)arg;
     while (V.active) {
         size_t len = 0;
-        u8 *d = segq_pop(&len);
-        if (!d) {
+        int slot = segq_pop(&len);
+        if (slot < 0) {
             svcSleepThread(15000000LL);
             continue;
         }
-        decode_segment(d, len);
-        free(d);
+        decode_segment(s_seg_pool[slot], len);
+        seg_release(slot);
     }
     LOG("vid: decode thread exit");
 }
@@ -864,7 +940,7 @@ static void vid_thread(void *arg) {
     }
 
     int in_w = 0, in_h = 0;
-    char *var = m3u8_lowest_variant(master, V.hls_url, &in_w, &in_h);
+    char *var = m3u8_lowest_variant(master, V.hls_url, &in_w, &in_h, V.quality);
     free(master);
     if (!var) {
         LOG("vid: no variant in master m3u8");
@@ -934,18 +1010,18 @@ static void vid_thread(void *arg) {
         if (!V.active) { free(seg); break; }
 
         size_t slen = 0;
-        u8 *sdata = download_segment(seg, &slen);
+        int slot = download_segment(seg, &slen);
         strncpy(V.last_seg, seg, sizeof(V.last_seg)-1);
         V.last_seg[sizeof(V.last_seg)-1] = 0;
         free(seg);
 
-        if (sdata) {
+        if (slot >= 0) {
             seg_count++;
             if (seg_count <= 3 || (seg_count % 30) == 0)
                 LOG("vid: seg #%d (%d KB) q=%d", seg_count,
                     (int)(slen / 1024), s_segq_count);
-            if (!segq_push(sdata, slen))
-                free(sdata);
+            if (!segq_push(slot, slen))
+                seg_release(slot);
         }
     }
     LOG("vid: download thread exit");
@@ -980,6 +1056,14 @@ bool video_init(void) {
     if (!V.outbuf || !V.nalbuf || !V.stgbuf) {
         LOG("vid: linearAlloc FAILED");
         return false;
+    }
+    for (int i = 0; i < SEG_POOL_N; i++) {
+        s_seg_pool[i] = malloc(SEG_MAX);
+        s_seg_used[i] = false;
+        if (!s_seg_pool[i]) {
+            LOG("vid: seg pool alloc FAILED (slot %d)", i);
+            return false;
+        }
     }
     memset(V.outbuf, 0, TEX_W * TEX_H * 2);
     memset(V.stgbuf, 0, TEX_W * TEX_H * 2);
@@ -1016,16 +1100,20 @@ void video_exit(void) {
     if (V.outbuf)  { linearFree(V.outbuf); V.outbuf = NULL; }
     if (V.nalbuf)  { linearFree(V.nalbuf); V.nalbuf = NULL; }
     if (V.stgbuf)  { linearFree(V.stgbuf); V.stgbuf = NULL; }
+    for (int i = 0; i < SEG_POOL_N; i++) {
+        free(s_seg_pool[i]); s_seg_pool[i] = NULL; s_seg_used[i] = false;
+    }
     C3D_TexDelete(&V.tex);
 }
 
 void video_start(const char *channel, const char *oauth_pass,
-                 const char *client_id) {
+                 const char *client_id, int quality) {
     video_stop();
     audio_reset();
     strncpy(V.channel,   channel,    sizeof(V.channel)-1);
     strncpy(V.oauth,     oauth_pass, sizeof(V.oauth)-1);
     strncpy(V.client_id, client_id,  sizeof(V.client_id)-1);
+    V.quality = quality;
     V.hls_url[0] = 0; V.last_seg[0] = 0;
     V.has_frame = false; V.offline = false; V.active = true;
     V.tex_valid = false;  /* Clear old frame so loading indicator works */
@@ -1035,6 +1123,8 @@ void video_start(const char *channel, const char *oauth_pass,
     s_frame_count = 0; s_upload_count = 0; s_draw_count = 0;
     s_got_real_frame = false;
     s_pace_tick = 0;
+    s_max_nal_size = 0;
+    s_incomplete_count = 0;
     segq_drain();
     /* both pipeline threads run on core 2 (New3DS extra core) */
     s_dec_thread = threadCreate(dec_thread_fn, NULL, 64*1024, 0x19, 2, false);
@@ -1046,6 +1136,8 @@ void video_start(const char *channel, const char *oauth_pass,
 void video_stop(void) {
     if (!V.active) return;
     V.active = false;
+    LOG("vid: video_stop called");
+    /* Wait for threads to exit before cleanup */
     if (V.thread) {
         threadJoin(V.thread, U64_MAX);
         threadFree(V.thread);
@@ -1056,7 +1148,30 @@ void video_stop(void) {
         threadFree(s_dec_thread);
         s_dec_thread = NULL;
     }
+    /* NOW safe to drain — decoder thread exited */
     segq_drain();
+    /* Clean up curl handles to prevent stale connection state */
+    if (s_curl_pl) {
+        curl_easy_cleanup(s_curl_pl);
+        s_curl_pl = NULL;
+    }
+    if (s_curl_seg) {
+        curl_easy_cleanup(s_curl_seg);
+        s_curl_seg = NULL;
+    }
+    /* CRITICAL: Reset MVD hardware to prevent corruption on restart */
+    if (V.mvd_ok) {
+        mvdstdExit();
+        Result r = mvdstdInit(MVDMODE_VIDEOPROCESSING, MVD_INPUT_H264,
+            MVD_OUTPUT_BGR565, MVD_DEFAULT_WORKBUF_SIZE, NULL);
+        if (R_FAILED(r)) {
+            LOG("vid: mvdstdInit reinit FAILED 0x%lx", r);
+            V.mvd_ok = false;
+        } else {
+            LOG("vid: MVD reset OK");
+        }
+    }
+    LOG("vid: video_stop complete");
     /* tex_valid intentionally NOT cleared — hold last frame on screen */
 }
 
