@@ -17,6 +17,9 @@ Thumbs.db
 build_log.txt
 *.log
 
+# Luma3DS crash dumps (dev artifacts, never commit)
+dumps/
+
 # Cloned reference repos
 reference/
 
