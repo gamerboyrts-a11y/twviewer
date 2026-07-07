@@ -52,7 +52,7 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 - **Getting your login code:** to log in, tap the red/green **Login** button — that starts the device login and shows the code you enter at twitch.tv/activate. The "login at twitch.tv/activate" text in the bottom bar is only a reminder; it does not show the code.
 - **Quality buttons may need a few taps:** when switching between 160p and 360p, the button doesn't always register on the first tap. Keep tapping until the button highlights and the stream restarts.
-- **Some channels don't render correctly:** channels whose picture is mostly a static overlay with little motion (e.g. GamesDoneQuick) may display incorrectly. Most channels are unaffected — this is under investigation.
+- **Some channels don't render correctly:** channels that don't offer Low Latency mode (e.g. GamesDoneQuick, some marathons/events) may display incorrectly — garbled frames or frozen picture. This happens because Normal Latency streams use widely-spaced keyframes that the 3DS decoder can't recover from. Most regular streamers offer Low Latency and work fine.
 - **Video may pause mid-stream:** if the picture stops, just wait — it resumes automatically after a bit. This is normal (usually server-side ads or a short network hiccup); no need to restart the app.
 - **Loading delays:** During stream startup, ads may be running on the server side. Wait for video to appear — this is normal Twitch behavior.
 - **System chat bug:** If you see system messages appearing in chat incorrectly, log out and log back in using the Device Code flow. This resets the IRC connection and fixes chat display.
