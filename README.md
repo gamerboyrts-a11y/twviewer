@@ -37,6 +37,15 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
 **After installation:** find app at `sd:/3ds/twviewer.3dsx` — launch from Homebrew Launcher.
 
+## Recommended System Settings
+
+For best performance, configure these settings via the **Rosalina menu** (hold **L + Down + Select** while in Homebrew Launcher or in-game):
+
+1. **System configuration** → **New 3DS CPU** → **Clock+L2** (enables the extra CPU cores)
+2. (Optional) **Debugger options** → disable any active debuggers to free up resources
+
+You only need to set these once — they persist across reboots. TwViewer uses the New 3DS extra cores for video decode and download threads.
+
 ## Features
 
 - Live stream video on the top screen (New 3DS MVD hardware H.264 decode)
