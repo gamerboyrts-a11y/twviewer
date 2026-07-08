@@ -92,6 +92,8 @@ MIT License - free to use, modify, and distribute.
 
 ## Disclaimer
 
+This is unofficial, experimental homebrew provided as-is. Use at your own risk — I'm not responsible for any damage, data loss, or issues caused to your device from using this app.
+
 TwViewer is an independent project and is not affiliated with, endorsed by, or sponsored by Twitch Interactive, Inc. "Twitch" is a trademark of Twitch Interactive, Inc.
 
 ## Donation
