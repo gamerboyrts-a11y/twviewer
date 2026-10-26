@@ -20,6 +20,7 @@
 #include <citro3d.h>
 #include <citro2d.h>
 #include "video.h"
+#include "audio.h"
 #include <tex3ds.h>
 #include <malloc.h>
 #include <arpa/inet.h>
@@ -94,6 +95,7 @@
 #define COL_OVERLAY     C2D_Color32(0,0,0,180)
 #define COL_ROW_SEL     C2D_Color32(60,40,100,255)
 #define COL_BTN         C2D_Color32(80,50,140,255)
+#define COL_BTN_GREEN   C2D_Color32(50,150,90,255)
 #define COL_BTN_RED     C2D_Color32(140,40,40,255)
 #define COL_TOGGLE_ON   C2D_Color32(40,160,80,255)
 #define COL_TOGGLE_OFF  C2D_Color32(80,80,80,255)
@@ -102,10 +104,10 @@
 #define COL_BAR_BG      C2D_Color32(50,50,80,150)
 
 /* ── Types ───────────────────────────────────────────────── */
-typedef enum { TAB_CHAT=0, TAB_CHANNELS=1, TAB_SETTINGS=2 } TabID;
-typedef enum { QUAL_160P=0, QUAL_360P=1 } VideoQuality;
-#define QUAL_COUNT 2
-static const char *quality_labels[] = {"160p","360p"};
+typedef enum { TAB_DISCOVER=0, TAB_CHAT=1, TAB_CHANNELS=2, TAB_SETTINGS=3 } TabID;
+typedef enum { QUAL_160P=0, QUAL_360P=1, QUAL_360P_ADFREE=2 } VideoQuality;
+#define QUAL_COUNT 3
+static const char *quality_labels[] = {"160p","360p","360p Ad-Free"};
 typedef enum { STATE_WATCHING, STATE_ERROR, STATE_LOGIN_DEVICE } AppState;
 typedef struct { char nick[32]; char text[MAX_LINE_LEN]; } ChatLine;
 typedef struct {
@@ -113,6 +115,15 @@ typedef struct {
     bool is_live;
     u32  viewer_count;
 } ChannelHistoryEntry;
+typedef struct {
+    char name[64];
+    char game[64];
+    u32  viewers;
+    char title[128];
+} DiscoverChannel;
+typedef struct { char *data; size_t len; size_t cap; } CurlBuf;
+static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
+typedef struct { char oauth[128]; } DiscoverRequest;
 
 /* ── App struct ──────────────────────────────────────────── */
 typedef struct {
@@ -137,7 +148,11 @@ typedef struct {
     int  scroll_offset;
     bool scroll_locked;
     char input[128];
+    char input_display[140];     /* Cached ellipsis result */
+    bool input_display_dirty;
     char channel_search[48];
+    char search_display[70];     /* Cached ellipsis result */
+    bool search_display_dirty;
     AppState state;
     TabID    tab;
     char     status_msg[96];
@@ -149,6 +164,7 @@ typedef struct {
     C3D_RenderTarget *bot;
     C2D_Font  font;
     C2D_TextBuf tbuf;
+    C2D_TextBuf cache_tbuf;  /* Separate buffer for cached text (never cleared) */
 
     /* Device Code Flow state */
     struct {
@@ -170,6 +186,35 @@ typedef struct {
     /* Video state tracking — separate from IRC */
     bool vid_ever_started;
     bool channel_loading;
+
+    /* Performance: cached text objects for static UI */
+    struct {
+        C2D_Text login_label;
+        C2D_Text display_label;
+        C2D_Text quality_label;
+        C2D_Text overlay_label;
+        C2D_Text quality_btns[3];
+        C2D_Text settings_tip;
+        C2D_Text settings_footer;
+        bool initialized;
+    } text_cache;
+
+    /* Performance: IRC throttling */
+    u32 frame_count;
+
+    /* Discover tab state */
+    DiscoverChannel discover_list[20];
+    int  discover_count;
+    int  discover_sel;
+    int  discover_scroll;
+    u64  discover_last_fetch;
+    bool discover_loading;
+    char discover_status[96];
+    volatile bool discover_cancel;
+    LightLock discover_lock;
+    Thread discover_thread;
+    bool audio_compressor;  /* Audio compression toggle */
+    int audio_volume_level; /* 0=100%, 1=200%, 2=300% output gain */
 } App;
 
 static App app;
@@ -180,6 +225,43 @@ bool g_logging_enabled = false;
  * ═══════════════════════════════════════════════════════════ */
 
 static void begin_text_frame(void) { C2D_TextBufClear(app.tbuf); }
+
+/* Initialize cached static text (called once at startup) */
+static void init_text_cache(void) {
+    if (app.text_cache.initialized) return;
+
+    C2D_TextFontParse(&app.text_cache.login_label, app.font, app.cache_tbuf, "LOGIN");
+    C2D_TextOptimize(&app.text_cache.login_label);
+
+    C2D_TextFontParse(&app.text_cache.display_label, app.font, app.cache_tbuf, "DISPLAY");
+    C2D_TextOptimize(&app.text_cache.display_label);
+
+    C2D_TextFontParse(&app.text_cache.quality_label, app.font, app.cache_tbuf, "Video Quality:");
+    C2D_TextOptimize(&app.text_cache.quality_label);
+
+    C2D_TextFontParse(&app.text_cache.overlay_label, app.font, app.cache_tbuf, "Stream Info Overlay:");
+    C2D_TextOptimize(&app.text_cache.overlay_label);
+
+    for (int i = 0; i < 3; i++) {
+        C2D_TextFontParse(&app.text_cache.quality_btns[i], app.font, app.cache_tbuf, quality_labels[i]);
+        C2D_TextOptimize(&app.text_cache.quality_btns[i]);
+    }
+
+    C2D_TextFontParse(&app.text_cache.settings_tip, app.font, app.cache_tbuf,
+                      "Tip: Rejoin channel to apply quality change");
+    C2D_TextOptimize(&app.text_cache.settings_tip);
+
+    C2D_TextFontParse(&app.text_cache.settings_footer, app.font, app.cache_tbuf,
+                      "L/R: Switch tabs | SELECT: Toggle overlay");
+    C2D_TextOptimize(&app.text_cache.settings_footer);
+
+    app.text_cache.initialized = true;
+}
+
+/* Draw cached static text (much faster than parsing every frame) */
+static void draw_text_cached(C2D_Text *cached, float x, float y, float sz, u32 col) {
+    C2D_DrawText(cached, C2D_WithColor, x, y, 0.5f, sz, sz, col);
+}
 
 static void set_status(const char *fmt, ...) {
     va_list va;
@@ -294,8 +376,9 @@ static void save_settings(void) {
     mkdir_config();
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) return;
-    fprintf(f, "channel:%s\nquality:%d\noverlay:%d\n",
-            app.channel, (int)app.quality, app.show_overlay ? 1 : 0);
+    fprintf(f, "channel:%s\nquality:%d\noverlay:%d\ncompressor:%d\nvolume_boost:%d\n",
+            app.channel, (int)app.quality, app.show_overlay ? 1 : 0,
+            app.audio_compressor ? 1 : 0, app.audio_volume_level);
     fclose(f);
 }
 
@@ -304,6 +387,8 @@ static void load_settings(void) {
     snprintf(app.channel, sizeof(app.channel), "#%s", DEFAULT_CHANNEL);
     app.quality     = QUAL_360P;
     app.show_overlay = false;
+    app.audio_compressor = false;
+    app.audio_volume_level = 0;
     if (!f) return;
     char line[128];
     while (fgets(line, sizeof(line), f)) {
@@ -315,6 +400,12 @@ static void load_settings(void) {
             app.quality = (VideoQuality)q;
         }
         else if (strncmp(line,"overlay:", 8) == 0) app.show_overlay = atoi(line+8) != 0;
+        else if (strncmp(line,"compressor:", 11) == 0) app.audio_compressor = atoi(line+11) != 0;
+        else if (strncmp(line,"volume_boost:", 13) == 0) {
+            int level = atoi(line+13);
+            if (level < 0 || level > 2) level = level ? 1 : 0;
+            app.audio_volume_level = level;
+        }
     }
     fclose(f);
 }
@@ -359,6 +450,246 @@ static void do_logout(void) {
              (int)(osGetTime()%90000+10000));
     app.logged_in = false;
     set_status("Logged out");
+}
+
+static bool discover_snapshot(DiscoverChannel channels[20], int *count,
+                              bool *loading) {
+    LightLock_Lock(&app.discover_lock);
+    *count = app.discover_count;
+    *loading = app.discover_loading;
+    memcpy(channels, app.discover_list, sizeof(app.discover_list));
+    LightLock_Unlock(&app.discover_lock);
+    return *count > 0;
+}
+
+static void discover_set_message(const char *message) {
+    LightLock_Lock(&app.discover_lock);
+    snprintf(app.discover_status, sizeof(app.discover_status), "Discover: %.85s", message);
+    LightLock_Unlock(&app.discover_lock);
+}
+
+static void discover_get_message(char message[96]) {
+    LightLock_Lock(&app.discover_lock);
+    memcpy(message, app.discover_status, sizeof(app.discover_status));
+    LightLock_Unlock(&app.discover_lock);
+}
+
+static int curl_abort_discover(void *userdata, curl_off_t dltotal,
+                               curl_off_t dlnow, curl_off_t ultotal,
+                               curl_off_t ulnow) {
+    (void)userdata; (void)dltotal; (void)dlnow;
+    (void)ultotal; (void)ulnow;
+    return app.discover_cancel ? 1 : 0;
+}
+
+static void discover_finish(DiscoverChannel channels[20], int count) {
+    LightLock_Lock(&app.discover_lock);
+    if (channels) {
+        memcpy(app.discover_list, channels, sizeof(app.discover_list));
+        app.discover_count = count;
+        app.discover_last_fetch = osGetTime();
+    }
+    app.discover_loading = false;
+    LightLock_Unlock(&app.discover_lock);
+}
+
+static void discover_set_status(long http_code, CURLcode curl_code, int parsed_count) {
+    char message[96];
+    if (curl_code != CURLE_OK) {
+        snprintf(message, sizeof(message), "Network error (%d)", (int)curl_code);
+    } else if (http_code == 401 || http_code == 403) {
+        snprintf(message, sizeof(message), "Login expired - log in again");
+    } else if (http_code < 200 || http_code >= 300) {
+        snprintf(message, sizeof(message), "Request failed (HTTP %ld)", http_code);
+    } else if (parsed_count == 0) {
+        snprintf(message, sizeof(message), "No live channels returned");
+    } else {
+        snprintf(message, sizeof(message), "Loaded %d live channels", parsed_count);
+    }
+    discover_set_message(message);
+}
+
+/* Fetch on a worker thread so HTTP latency does not block input or video. */
+static void discover_worker(void *arg) {
+    DiscoverRequest *request = (DiscoverRequest *)arg;
+    char oauth[sizeof(request->oauth)];
+    memcpy(oauth, request->oauth, sizeof(oauth));
+    free(request);
+
+    DiscoverChannel channels[20];
+    memset(channels, 0, sizeof(channels));
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        discover_set_message("Unable to initialize network request");
+        discover_finish(NULL, 0);
+        return;
+    }
+
+    CurlBuf buf = { NULL, 0, 0 };
+    buf.data = malloc(32*1024);
+    if (!buf.data) {
+        curl_easy_cleanup(curl);
+        discover_set_message("Out of memory");
+        discover_finish(NULL, 0);
+        return;
+    }
+    buf.cap = 32*1024; buf.data[0] = '\0';
+
+    struct curl_slist *hdrs = NULL;
+    char cid_hdr[80], auth_hdr[192];
+    snprintf(cid_hdr, sizeof(cid_hdr), "Client-ID: %s", CLIENT_ID_OAUTH);
+    hdrs = curl_slist_append(hdrs, cid_hdr);
+    snprintf(auth_hdr, sizeof(auth_hdr), "Authorization: Bearer %.*s",
+             (int)(sizeof(oauth) - 12), oauth + 11);
+    hdrs = curl_slist_append(hdrs, auth_hdr);
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.twitch.tv/helix/streams?first=20&language=en");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_abort_discover);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || http_code < 200 || http_code >= 300 ||
+        !buf.data || buf.len == 0) {
+        LOG("discover: request failed curl=%d http=%ld len=%d",
+            (int)res, http_code, (int)buf.len);
+        discover_set_status(http_code, res, 0);
+        free(buf.data);
+        discover_finish(NULL, 0);
+        return;
+    }
+
+    /* Parse JSON: extract user_login, game_name, viewer_count, title */
+    const char *p = buf.data;
+    int count = 0;
+    while (count < 20 && (p = strstr(p, "\"user_login\""))) {
+        const char *object_start = p;
+        p += 12;
+        while (*p == ':' || *p == ' ' || *p == '"') p++;
+        const char *name_start = p;
+        while (*p && *p != '"') p++;
+        int name_len = (int)(p - name_start);
+        if (name_len > 0 && name_len < 63) {
+            memcpy(channels[count].name, name_start, name_len);
+            channels[count].name[name_len] = '\0';
+        }
+
+        /* Extract game_name */
+        const char *object_end = strchr(p, '}');
+        const char *game_p = strstr(p, "\"game_name\"");
+        if (game_p && (!object_end || game_p < object_end)) {
+            game_p += 11;
+            while (*game_p == ':' || *game_p == ' ' || *game_p == '"') game_p++;
+            const char *game_start = game_p;
+            while (*game_p && *game_p != '"') game_p++;
+            int game_len = (int)(game_p - game_start);
+            if (game_len > 0 && game_len < 63) {
+                memcpy(channels[count].game, game_start, game_len);
+                channels[count].game[game_len] = '\0';
+            }
+        }
+
+        /* Extract viewer_count */
+        const char *viewer_p = strstr(p, "\"viewer_count\"");
+        if (viewer_p && (!object_end || viewer_p < object_end)) {
+            viewer_p += 14;
+            while (*viewer_p == ':' || *viewer_p == ' ') viewer_p++;
+            channels[count].viewers = (u32)atoi(viewer_p);
+        }
+
+        /* Extract title */
+        const char *title_p = strstr(p, "\"title\"");
+        if (title_p && (!object_end || title_p < object_end)) {
+            title_p += 7;
+            while (*title_p == ':' || *title_p == ' ' || *title_p == '"') title_p++;
+            const char *title_start = title_p;
+            int escape_count = 0;
+            while (*title_p && (*title_p != '"' || (escape_count % 2 == 1))) {
+                if (*title_p == '\\') escape_count++;
+                else escape_count = 0;
+                title_p++;
+            }
+            int title_len = (int)(title_p - title_start);
+            if (title_len > 0 && title_len < 127) {
+                memcpy(channels[count].title, title_start, title_len);
+                channels[count].title[title_len] = '\0';
+            }
+        }
+
+        count++;
+        p = object_start + 12;
+    }
+
+    free(buf.data);
+    discover_finish(channels, count);
+    discover_set_status(http_code, res, count);
+    LOG("discover: fetched %d channels", count);
+}
+
+static void fetch_discover_channels(void) {
+    DiscoverChannel unused[20];
+    int count;
+    bool loading;
+    discover_snapshot(unused, &count, &loading);
+    if (loading) return;
+
+    if (!app.logged_in || strncmp(app.oauth, "PASS oauth:", 11) != 0) {
+        discover_set_message("Log in to browse live channels");
+        set_status("Log in to browse live channels");
+        return;
+    }
+
+    DiscoverRequest *request = malloc(sizeof(*request));
+    if (!request) {
+        discover_set_message("Out of memory");
+        set_status("Could not start channel refresh");
+        return;
+    }
+    snprintf(request->oauth, sizeof(request->oauth), "%s", app.oauth);
+
+    if (app.discover_thread) {
+        threadJoin(app.discover_thread, U64_MAX);
+        threadFree(app.discover_thread);
+        app.discover_thread = NULL;
+    }
+
+    LightLock_Lock(&app.discover_lock);
+    app.discover_cancel = false;
+    app.discover_loading = true;
+    app.discover_count = 0;
+    snprintf(app.discover_status, sizeof(app.discover_status), "Discover: Loading channels...");
+    LightLock_Unlock(&app.discover_lock);
+
+    app.discover_thread = threadCreate(discover_worker, request,
+                                       32*1024, 0x30, 1, false);
+    if (!app.discover_thread) {
+        free(request);
+        discover_set_message("Could not start refresh thread");
+        discover_finish(NULL, 0);
+        set_status("Could not start channel refresh");
+    }
+}
+
+static void open_discover_tab(void) {
+    app.tab = TAB_DISCOVER;
+    DiscoverChannel channels[20];
+    int count;
+    bool loading;
+    discover_snapshot(channels, &count, &loading);
+    if (count == 0 && !loading)
+        fetch_discover_channels();
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -483,6 +814,88 @@ static bool irc_send_msg(const char *text) {
     return true;
 }
 
+/* Cache input display string with ellipsis (called when input changes) */
+static void update_input_display(void) {
+    if (!app.input[0]) {
+        app.input_display[0] = '\0';
+        app.input_display_dirty = false;
+        return;
+    }
+
+    C2D_Text txt;
+    C2D_TextBuf buf = C2D_TextBufNew(512);
+    C2D_TextFontParse(&txt, app.font, buf, app.input);
+    float w, h;
+    C2D_TextGetDimensions(&txt, 0.38f, 0.38f, &w, &h);
+    const float box_w = BOT_W - 52 - 8;
+
+    if (w <= box_w) {
+        snprintf(app.input_display, sizeof(app.input_display), "%s_", app.input);
+    } else {
+        const char *ellipsis = "..._";
+        C2D_Text ell_txt;
+        C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
+        float ell_w;
+        C2D_TextGetDimensions(&ell_txt, 0.38f, 0.38f, &ell_w, &h);
+        const char *p = app.input;
+        while (*p) {
+            if ((*p & 0xC0) == 0x80) { p++; continue; }
+            C2D_Text suffix_txt;
+            C2D_TextFontParse(&suffix_txt, app.font, buf, p);
+            float suffix_w;
+            C2D_TextGetDimensions(&suffix_txt, 0.38f, 0.38f, &suffix_w, &h);
+            if (ell_w + suffix_w <= box_w) {
+                snprintf(app.input_display, sizeof(app.input_display), "...%s_", p);
+                break;
+            }
+            p++;
+        }
+    }
+    C2D_TextBufDelete(buf);
+    app.input_display_dirty = false;
+}
+
+/* Cache search display string with ellipsis */
+static void update_search_display(void) {
+    if (!app.channel_search[0]) {
+        app.search_display[0] = '\0';
+        app.search_display_dirty = false;
+        return;
+    }
+
+    C2D_Text txt;
+    C2D_TextBuf buf = C2D_TextBufNew(256);
+    C2D_TextFontParse(&txt, app.font, buf, app.channel_search);
+    float w, h;
+    C2D_TextGetDimensions(&txt, 0.36f, 0.36f, &w, &h);
+    const float box_w = BOT_W - 52 - 8;
+
+    if (w <= box_w) {
+        snprintf(app.search_display, sizeof(app.search_display), "%s_", app.channel_search);
+    } else {
+        const char *ellipsis = "..._";
+        C2D_Text ell_txt;
+        C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
+        float ell_w;
+        C2D_TextGetDimensions(&ell_txt, 0.36f, 0.36f, &ell_w, &h);
+        const char *p = app.channel_search;
+        while (*p) {
+            if ((*p & 0xC0) == 0x80) { p++; continue; }
+            C2D_Text suffix_txt;
+            C2D_TextFontParse(&suffix_txt, app.font, buf, p);
+            float suffix_w;
+            C2D_TextGetDimensions(&suffix_txt, 0.36f, 0.36f, &suffix_w, &h);
+            if (ell_w + suffix_w <= box_w) {
+                snprintf(app.search_display, sizeof(app.search_display), "...%s_", p);
+                break;
+            }
+            p++;
+        }
+    }
+    C2D_TextBufDelete(buf);
+    app.search_display_dirty = false;
+}
+
 static void irc_poll(void) {
     if (!app.irc_connected || !g_tls_ok) return;
     char tmp[512];
@@ -588,8 +1001,6 @@ static void join_channel(const char *chan) {
 /* ═══════════════════════════════════════════════════════════
  * DEVICE CODE FLOW (DCF)
  * ═══════════════════════════════════════════════════════════ */
-
-typedef struct { char *data; size_t len; size_t cap; } CurlBuf;
 
 static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     CurlBuf *buf = (CurlBuf *)userdata;
@@ -860,6 +1271,17 @@ static void draw_top(void) {
         draw_rect(10, 38, TOP_W-20, 44, COL_CODE_BG);
         draw_text(TOP_W/2-60, 50, 0.72f, COL_WHITE, app.user_code);
 
+        /* Show expiry timer prominently near code */
+        if (app.dcf.polling) {
+            int elapsed = (int)((osGetTime() - app.dcf.start_tick) / 1000);
+            int total   = app.dcf.expires_in > 0 ? app.dcf.expires_in : 1800;
+            int remaining = total - elapsed;
+            if (remaining < 0) remaining = 0;
+            char timer[32];
+            snprintf(timer, sizeof(timer), "Expires in %ds", remaining);
+            draw_text(TOP_W/2-50, 70, 0.36f, remaining < 60 ? COL_YELLOW : COL_GRAY, timer);
+        }
+
         draw_text(10,  96, 0.38f, COL_WHITE,  "1. Open on your phone or PC:");
         draw_text(10, 114, 0.40f, COL_CYAN,   app.verify_url);
         draw_text(10, 142, 0.36f, COL_YELLOW, "2. Enter the code shown above.");
@@ -872,11 +1294,6 @@ static void draw_top(void) {
             if (pct < 0.0f) pct = 0.0f;
             draw_rect(10, 196, TOP_W-20, 8, COL_BAR_BG);
             draw_rect(10, 196, (int)((TOP_W-20)*pct), 8, COL_BAR_GREEN);
-            char timer[32];
-            int remaining = total - elapsed;
-            if (remaining < 0) remaining = 0;
-            snprintf(timer, sizeof(timer), "Expires in %ds", remaining);
-            draw_text(10, 208, 0.32f, COL_GRAY, timer);
         }
 
     } else if (app.state == STATE_ERROR) {
@@ -889,6 +1306,7 @@ static void draw_top(void) {
         if (video_is_offline()) {
             draw_text(60,  98, 0.55f, COL_RED,  "Channel is Offline");
             draw_text(60, 122, 0.40f, COL_GRAY, "No live stream right now");
+            draw_text(50, 142, 0.36f, COL_GRAY_DK, "Open Channels tab to try another");
         } else if (app.vid_ever_started) {
             /*
              * Draw video whenever we've ever started it for this channel.
@@ -907,10 +1325,15 @@ static void draw_top(void) {
                     float py = 104.0f     + sinf(ang) * 20.0f;
                     int age = (i - phase + 8) % 8;          /* 0 = brightest */
                     u8 lum = (u8)(255 - age * 26);
+                    /* Draw glow */
+                    C2D_DrawCircleSolid(px, py, 0, 4.5f,
+                        C2D_Color32(lum/4, (u8)(lum/6), lum/2, 120));
+                    /* Draw dot */
                     C2D_DrawCircleSolid(px, py, 0, 3.5f,
                         C2D_Color32(lum/2, (u8)(lum/3), lum, 255));
                 }
-                draw_text(TOP_W/2 - 32, 138, 0.40f, COL_GRAY, "Buffering...");
+                draw_text_with_glow(TOP_W/2 - 32, 138, 0.40f,
+                    C2D_Color32(0,0,0,150), COL_WHITE, "Buffering...");
             }
         } else if (app.thumb_loaded) {
             C2D_DrawImageAt(app.thumb_img, 0, (TOP_H - THUMB_H) / 2.0f,
@@ -945,14 +1368,70 @@ static void draw_top(void) {
  * ═══════════════════════════════════════════════════════════ */
 
 static void draw_tab_bar(void) {
-    int tw = BOT_W / 3;
-    const char *labels[] = {" CHAT", " CHANNELS", " SETTINGS"};
-    for (int i = 0; i < 3; i++) {
+    int tw = BOT_W / 4;  /* 4 tabs now */
+    const char *labels[] = {" DISCOVER", " CHAT", " CHANNELS", " SETTINGS"};
+    for (int i = 0; i < 4; i++) {
         u32 bg = (app.tab == (TabID)i) ? COL_TAB_ACT : COL_TAB_INACT;
         draw_rect(i*tw, 0, tw-1, TAB_H-1, bg);
-        draw_text(i*tw+4, 4, 0.40f, COL_WHITE, labels[i]);
+        draw_text(i*tw+2, 4, 0.38f, COL_WHITE, labels[i]);
     }
     draw_rect(0, TAB_H-1, BOT_W, 1, COL_DIVIDER);
+}
+
+static void draw_discover_tab(void) {
+    DiscoverChannel channels[20];
+    char status[96];
+    int channel_count;
+    bool loading;
+    discover_snapshot(channels, &channel_count, &loading);
+    discover_get_message(status);
+    float y = CHAT_TOP + 4;
+
+    /* Fetch button */
+    draw_rect(4, y, BOT_W-8, 20, COL_BTN);
+    draw_text(10, y+4, 0.38f, COL_WHITE,
+              loading ? "Loading..." : "Refresh Top Channels");
+    y += 26;
+
+    draw_rect(0, y, BOT_W, 1, COL_DIVIDER); y += 4;
+    draw_text(4, y, 0.36f, COL_GRAY, "Top Live Channels:"); y += 16;
+
+    if (status[0]) {
+        draw_text(4, y, 0.30f, COL_YELLOW, status);
+        y += 14;
+    }
+
+    if (channel_count == 0 && !loading) {
+        draw_text(4, y, 0.34f, COL_GRAY,
+                  app.logged_in ? "Tap Refresh to load channels" : "Log in in Settings to browse channels");
+        return;
+    }
+
+    /* Display channels list */
+    int visible_start = app.discover_scroll;
+    int visible_count = (CHAT_BOT - (int)y) / 20;
+    for (int i = visible_start; i < channel_count && i < visible_start + visible_count; i++) {
+        bool sel = (i == app.discover_sel);
+        draw_rect(4, y, BOT_W-8, 18, sel ? COL_ROW_SEL : COL_CHAT_BG);
+
+        /* Channel name */
+        draw_text(8, y+2, 0.34f, sel ? COL_YELLOW : COL_WHITE, channels[i].name);
+
+        /* Viewer count */
+        char vc[16];
+        if (channels[i].viewers >= 1000) {
+            snprintf(vc, sizeof(vc), "%luK", (unsigned long)(channels[i].viewers / 1000));
+        } else {
+            snprintf(vc, sizeof(vc), "%lu", (unsigned long)channels[i].viewers);
+        }
+        draw_text(BOT_W-50, y+2, 0.32f, COL_CYAN, vc);
+
+        y += 20;
+        if (y > CHAT_BOT-20) break;
+    }
+
+    draw_rect(0, INPUT_BAR_Y, BOT_W, INPUT_BAR_H, COL_INPUT_BG);
+    draw_text(4, INPUT_BAR_Y+6, 0.34f, COL_GRAY, "A=Join | Y=Channels");
 }
 
 static void draw_chat_tab(void) {
@@ -1001,41 +1480,17 @@ static void draw_chat_tab(void) {
     draw_rect(BOT_W-50, INPUT_BAR_Y+2, 1, INPUT_BAR_H-4, COL_DIVIDER);
 
     if (app.input[0]) {
-        C2D_Text txt;
-        C2D_TextBuf buf = C2D_TextBufNew(512);
-        C2D_TextFontParse(&txt, app.font, buf, app.input);
-        float w, h;
-        C2D_TextGetDimensions(&txt, 0.38f, 0.38f, &w, &h);
-        const float box_w = BOT_W - 52 - 8;
-        if (w <= box_w) {
-            char disp[140];
-            snprintf(disp, sizeof(disp), "%s_", app.input);
-            draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_WHITE, disp);
-        } else {
-            const char *ellipsis = "..._";
-            C2D_Text ell_txt;
-            C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
-            float ell_w;
-            C2D_TextGetDimensions(&ell_txt, 0.38f, 0.38f, &ell_w, &h);
-            const char *p = app.input;
-            while (*p) {
-                if ((*p & 0xC0) == 0x80) { p++; continue; }
-                C2D_Text suffix_txt;
-                C2D_TextFontParse(&suffix_txt, app.font, buf, p);
-                float suffix_w;
-                C2D_TextGetDimensions(&suffix_txt, 0.38f, 0.38f, &suffix_w, &h);
-                if (ell_w + suffix_w <= box_w) {
-                    char disp[160];
-                    snprintf(disp, sizeof(disp), "...%s_", p);
-                    draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_WHITE, disp);
-                    break;
-                }
-                p++;
-            }
-        }
-        C2D_TextBufDelete(buf);
+        if (app.input_display_dirty) update_input_display();
+        draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_WHITE, app.input_display);
     } else {
         draw_text(6, INPUT_BAR_Y+6, 0.38f, COL_GRAY, "Touch here to chat...");
+    }
+
+    /* Character counter when input present */
+    if (app.input[0]) {
+        char cnt[16];
+        snprintf(cnt, sizeof(cnt), "%d/128", (int)strlen(app.input));
+        draw_text(BOT_W-90, INPUT_BAR_Y+6, 0.30f, COL_GRAY_DK, cnt);
     }
 
     /* SEND button */
@@ -1054,39 +1509,8 @@ static void draw_channels_tab(void) {
     draw_rect(BOT_W-50, y, 1, 18, COL_DIVIDER);
 
     if (app.channel_search[0]) {
-        C2D_Text txt;
-        C2D_TextBuf buf = C2D_TextBufNew(256);
-        C2D_TextFontParse(&txt, app.font, buf, app.channel_search);
-        float w, h;
-        C2D_TextGetDimensions(&txt, 0.36f, 0.36f, &w, &h);
-        const float box_w = BOT_W - 52 - 8;
-        if (w <= box_w) {
-            char disp[60];
-            snprintf(disp, sizeof(disp), "%s_", app.channel_search);
-            draw_text(6, y+3, 0.36f, COL_WHITE, disp);
-        } else {
-            const char *ellipsis = "..._";
-            C2D_Text ell_txt;
-            C2D_TextFontParse(&ell_txt, app.font, buf, ellipsis);
-            float ell_w;
-            C2D_TextGetDimensions(&ell_txt, 0.36f, 0.36f, &ell_w, &h);
-            const char *p = app.channel_search;
-            while (*p) {
-                if ((*p & 0xC0) == 0x80) { p++; continue; }
-                C2D_Text suffix_txt;
-                C2D_TextFontParse(&suffix_txt, app.font, buf, p);
-                float suffix_w;
-                C2D_TextGetDimensions(&suffix_txt, 0.36f, 0.36f, &suffix_w, &h);
-                if (ell_w + suffix_w <= box_w) {
-                    char disp[70];
-                    snprintf(disp, sizeof(disp), "...%s_", p);
-                    draw_text(6, y+3, 0.36f, COL_WHITE, disp);
-                    break;
-                }
-                p++;
-            }
-        }
-        C2D_TextBufDelete(buf);
+        if (app.search_display_dirty) update_search_display();
+        draw_text(6, y+3, 0.36f, COL_WHITE, app.search_display);
     } else {
         draw_text(6, y+3, 0.36f, COL_GRAY, "Search channel...");
     }
@@ -1107,8 +1531,6 @@ static void draw_channels_tab(void) {
         bool sel = (i == app.history_sel);
         draw_rect(4, y, BOT_W-8, 18, sel ? COL_ROW_SEL : COL_CHAT_BG);
         draw_text(8, y+3, 0.38f, sel ? COL_YELLOW : COL_WHITE, app.history[i].name);
-        draw_rect(BOT_W-22, y+3, 16, 12, COL_BTN);
-        draw_text(BOT_W-18, y+4, 0.34f, COL_WHITE, ">");
         y += 20;
         if (y > CHAT_BOT-20) break;
     }
@@ -1126,7 +1548,7 @@ static void draw_channels_tab(void) {
 
 static void draw_settings_tab(void) {
     float y = CHAT_TOP + 6;
-    draw_text(4, y, 0.40f, COL_YELLOW, "LOGIN"); y += 18;
+    draw_text_cached(&app.text_cache.login_label, 4, y, 0.40f, COL_YELLOW); y += 18;
     if (app.logged_in) {
         char lbl[48]; snprintf(lbl, sizeof(lbl), "Logged in: %s", app.nick);
         draw_text(4, y, 0.36f, COL_GREEN, lbl); y += 20;
@@ -1134,27 +1556,57 @@ static void draw_settings_tab(void) {
         draw_text(10, y+4, 0.38f, COL_WHITE, "Logout"); y += 26;
     } else {
         draw_text(4, y, 0.34f, COL_RED, "Not logged in (read-only)"); y += 20;
-        draw_rect(4, y, BOT_W-8, 20, COL_BTN);
+        draw_rect(4, y, BOT_W-8, 20, COL_BTN_GREEN);
         draw_text(10, y+4, 0.36f, COL_WHITE, "Login at twitch.tv/activate");
         y += 26;
     }
     draw_rect(0, y, BOT_W, 1, COL_DIVIDER); y += 6;
-    draw_text(4, y, 0.40f, COL_YELLOW, "DISPLAY"); y += 14;
-    draw_text(4, y, 0.36f, COL_WHITE, "Stream Info Overlay:");
+    draw_text_cached(&app.text_cache.display_label, 4, y, 0.40f, COL_YELLOW); y += 14;
+    draw_text_cached(&app.text_cache.overlay_label, 4, y, 0.36f, COL_WHITE);
     draw_rect(BOT_W-54, y-2, 50, 16,
               app.show_overlay ? COL_TOGGLE_ON : COL_TOGGLE_OFF);
     draw_text(BOT_W-50, y+1, 0.36f, COL_WHITE,
               app.show_overlay ? " ON" : " OFF");
     y += 18;
-    draw_text(4, y, 0.36f, COL_WHITE, "Video Quality:"); y += 14;
+
+    /* Audio compressor toggle */
+    draw_text(4, y, 0.36f, COL_WHITE, "Audio Compressor:");
+    draw_rect(BOT_W-54, y-2, 50, 16,
+              app.audio_compressor ? COL_TOGGLE_ON : COL_TOGGLE_OFF);
+    draw_text(BOT_W-50, y+1, 0.36f, COL_WHITE,
+              app.audio_compressor ? " ON" : " OFF");
+    y += 18;
+
+    draw_text(4, y, 0.36f, COL_WHITE, "Volume Boost:");
+    draw_rect(BOT_W-54, y-2, 50, 16,
+              app.audio_volume_level ? COL_TOGGLE_ON : COL_TOGGLE_OFF);
+    int volume_level = app.audio_volume_level;
+    if (volume_level < 0) volume_level = 0;
+    if (volume_level > 2) volume_level = 2;
+    const char *volume_labels[] = {"100%", "200%", "300%"};
+    draw_text(BOT_W-50, y+1, 0.36f, COL_WHITE, volume_labels[volume_level]);
+    y += 18;
+
+    draw_text_cached(&app.text_cache.quality_label, 4, y, 0.36f, COL_WHITE); y += 14;
     for (int i = 0; i < QUAL_COUNT; i++) {
-        u32 bg = (app.quality == (VideoQuality)i) ? COL_PURPLE : COL_GRAY_DK;
-        draw_rect(4+i*56, y, 52, 16, bg);
-        draw_text(8+i*56, y+3, 0.36f, COL_WHITE, quality_labels[i]);
+        bool is_sel = (app.quality == (VideoQuality)i);
+        u32 bg = is_sel ? COL_PURPLE : COL_GRAY_DK;
+        int btn_w = (i == 2) ? 110 : 52;  /* Ad-Free button wider */
+        draw_rect(4+i*58, y, btn_w, 16, bg);
+        /* Draw border on selected */
+        if (is_sel) {
+            draw_rect(4+i*58, y, btn_w, 1, COL_PURPLE_LT);
+            draw_rect(4+i*58, y+15, btn_w, 1, COL_PURPLE_LT);
+            draw_rect(4+i*58, y, 1, 16, COL_PURPLE_LT);
+            draw_rect(4+i*58+btn_w-1, y, 1, 16, COL_PURPLE_LT);
+        }
+        draw_text_cached(&app.text_cache.quality_btns[i], 8+i*58, y+3, 0.34f, COL_WHITE);
     }
-    y += 20;
+    y += 18;
+    draw_text_cached(&app.text_cache.settings_tip, 4, y, 0.30f, COL_GRAY_DK);
+    y += 4;
     draw_rect(0, INPUT_BAR_Y, BOT_W, INPUT_BAR_H, COL_INPUT_BG);
-    draw_text(4, INPUT_BAR_Y+6, 0.34f, COL_GRAY, "Touch buttons or use D-Pad + A");
+    draw_text_cached(&app.text_cache.settings_footer, 4, INPUT_BAR_Y+6, 0.34f, COL_GRAY);
 }
 
 static void draw_bot(void) {
@@ -1163,9 +1615,10 @@ static void draw_bot(void) {
     begin_text_frame();
     draw_tab_bar();
     switch (app.tab) {
-        case TAB_CHAT:     draw_chat_tab();     break;
-        case TAB_CHANNELS: draw_channels_tab(); break;
-        case TAB_SETTINGS: draw_settings_tab(); break;
+        case TAB_DISCOVER:  draw_discover_tab();  break;
+        case TAB_CHAT:      draw_chat_tab();      break;
+        case TAB_CHANNELS:  draw_channels_tab();  break;
+        case TAB_SETTINGS:  draw_settings_tab();  break;
     }
 
     /* Loading indicator overlay */
@@ -1180,26 +1633,63 @@ static void draw_bot(void) {
 
 static void handle_touch(touchPosition *t) {
     if (t->px == 0 && t->py == 0) return;
-    int tw = BOT_W / 3;
-    if (t->py < TAB_H) { app.tab = (TabID)(t->px / tw); return; }
+    int tw = BOT_W / 4;  /* 4 tabs */
+    if (t->py < TAB_H) {
+        TabID next = (TabID)(t->px / tw);
+        if (next == TAB_DISCOVER) open_discover_tab();
+        else app.tab = next;
+        return;
+    }
     switch (app.tab) {
+        case TAB_DISCOVER: {
+            DiscoverChannel channels[20];
+            char status[96];
+            int channel_count;
+            bool loading;
+            discover_snapshot(channels, &channel_count, &loading);
+            discover_get_message(status);
+            float y = CHAT_TOP + 4;
+            /* Refresh button */
+            if (touch_in(t, 4, (int)y, BOT_W-8, 20)) {
+                if (!loading) fetch_discover_channels();
+                return;
+            }
+            y += 46;
+            if (status[0]) y += 14;
+            /* Channel list items */
+            int visible_count = (CHAT_BOT - (int)y) / 20;
+            for (int i = app.discover_scroll; i < channel_count && i < app.discover_scroll + visible_count; i++) {
+                if (touch_in(t, 4, (int)y, BOT_W-8, 18)) {
+                    join_channel(channels[i].name);
+                    return;
+                }
+                y += 20;
+                if (y > CHAT_BOT-20) break;
+            }
+            break;
+        }
         case TAB_CHAT:
             if (touch_in(t, BOT_W-46, INPUT_BAR_Y+2, 44, INPUT_BAR_H-4)) {
                 if (app.input[0]) {
                     if (irc_send_msg(app.input)) {
                         app.input[0] = '\0';
+                        app.input_display_dirty = true;
                     }
                 } else {
                     char tmp[128] = {0};
-                    if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                    if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input)) {
                         strncpy(app.input, tmp, sizeof(app.input)-1);
+                        app.input_display_dirty = true;
+                    }
                 }
                 return;
             }
             if (touch_in(t, 2, INPUT_BAR_Y+2, BOT_W-52, INPUT_BAR_H-4)) {
                 char tmp[128] = {0};
-                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input)) {
                     strncpy(app.input, tmp, sizeof(app.input)-1);
+                    app.input_display_dirty = true;
+                }
                 return;
             }
             if (t->py >= CHAT_TOP && t->py < CHAT_BOT) {
@@ -1219,10 +1709,19 @@ static void handle_touch(touchPosition *t) {
                 if (app.channel_search[0]) {
                     join_channel(app.channel_search);
                     app.channel_search[0] = '\0';
+                    app.search_display_dirty = true;
                 } else {
                     char tmp[48] = {0};
-                    if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                    if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search)) {
                         strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
+                        app.search_display_dirty = true;
+                        /* Auto-submit if search filled */
+                        if (app.channel_search[0]) {
+                            join_channel(app.channel_search);
+                            app.channel_search[0] = '\0';
+                            app.search_display_dirty = true;
+                        }
+                    }
                 }
                 return;
             }
@@ -1230,8 +1729,16 @@ static void handle_touch(touchPosition *t) {
             /* Touch search input box — open keyboard */
             if (touch_in(t, 2, (int)y, BOT_W-52, 18)) {
                 char tmp[48] = {0};
-                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search)) {
                     strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
+                    app.search_display_dirty = true;
+                    /* Auto-submit if search filled */
+                    if (app.channel_search[0]) {
+                        join_channel(app.channel_search);
+                        app.channel_search[0] = '\0';
+                        app.search_display_dirty = true;
+                    }
+                }
                 return;
             }
 
@@ -1272,45 +1779,93 @@ static void handle_touch(touchPosition *t) {
             break;
         }
         case TAB_SETTINGS: {
-            float y = CHAT_TOP + 24;
+            float y = CHAT_TOP + 6 + 18 + 20;
             if (app.logged_in) {
                 if (touch_in(t, 4, (int)y, 100, 20)) do_logout();
             } else {
                 if (touch_in(t, 4, (int)y, BOT_W-8, 20)) do_device_login_start();
             }
-            y += 52;
+            y += 26 + 6 + 14;
+            /* Overlay toggle */
             if (touch_in(t, BOT_W-54, (int)y-2, 50, 16)) {
                 app.show_overlay = !app.show_overlay; save_settings();
             }
+            y += 18;
+            /* Audio compressor toggle */
+            if (touch_in(t, BOT_W-54, (int)y-2, 50, 16)) {
+                app.audio_compressor = !app.audio_compressor;
+                audio_set_compressor(app.audio_compressor);
+                save_settings();
+            }
+            y += 18;
+            /* Volume boost toggle */
+            if (touch_in(t, BOT_W-54, (int)y-2, 50, 16)) {
+                app.audio_volume_level = (app.audio_volume_level + 1) % 3;
+                audio_set_volume_level(app.audio_volume_level);
+                save_settings();
+            }
             y += 32;
-            for (int i = 0; i < QUAL_COUNT; i++)
-                if (touch_in(t, 4+i*56, (int)y, 52, 16)) {
+            for (int i = 0; i < QUAL_COUNT; i++) {
+                int btn_w = (i == 2) ? 110 : 52;  /* Ad-Free button wider */
+                if (touch_in(t, 4+i*58, (int)y, btn_w, 16)) {
                     if (app.quality != (VideoQuality)i) {
                         app.quality = (VideoQuality)i;
                         save_settings();
-                        /* Auto-restart stream if watching */
-                        if (video_is_active() && app.channel[0]) {
-                            const char *ch = app.channel[0]=='#' ? app.channel+1 : app.channel;
-                            video_stop();
-                            /* Brief delay for hardware cleanup */
-                            svcSleepThread(100000000LL);  /* 100ms */
-                            app.channel_loading = true;
-                            video_start(ch, app.oauth, CLIENT_ID, (int)app.quality);
-                            set_status("Quality changed — stream restarted");
-                        }
+                        set_status("Quality saved — rejoin channel to apply");
                     }
                 }
+            }
             break;
         }
     }
 }
 
 static void handle_buttons(u32 kDown) {
-    if (kDown & KEY_L) app.tab = (TabID)((app.tab + 2) % 3);
-    if (kDown & KEY_R) app.tab = (TabID)((app.tab + 1) % 3);
+    if (kDown & KEY_L) {
+        TabID next = (TabID)((app.tab + 3) % 4);
+        if (next == TAB_DISCOVER) open_discover_tab();
+        else app.tab = next;
+    }
+    if (kDown & KEY_R) {
+        TabID next = (TabID)((app.tab + 1) % 4);
+        if (next == TAB_DISCOVER) open_discover_tab();
+        else app.tab = next;
+    }
     if (kDown & KEY_SELECT) { app.show_overlay = !app.show_overlay; save_settings(); }
     if (kDown & KEY_Y) app.tab = TAB_CHANNELS;
     switch (app.tab) {
+        case TAB_DISCOVER: {
+            DiscoverChannel channels[20];
+            char status[96];
+            int channel_count;
+            bool loading;
+            discover_snapshot(channels, &channel_count, &loading);
+            discover_get_message(status);
+            if (kDown & KEY_DUP) {
+                if (app.discover_sel > 0) {
+                    app.discover_sel--;
+                    if (app.discover_sel < app.discover_scroll)
+                        app.discover_scroll = app.discover_sel;
+                }
+            }
+            if (kDown & KEY_DDOWN) {
+                if (app.discover_sel < channel_count - 1) {
+                    app.discover_sel++;
+                    int visible_rows = (CHAT_BOT - (CHAT_TOP + 46)) / 20;
+                    if (status[0]) visible_rows -= 1;
+                    if (app.discover_sel >= app.discover_scroll + visible_rows)
+                        app.discover_scroll = app.discover_sel - visible_rows + 1;
+                }
+            }
+            if (kDown & KEY_A) {
+                if (channel_count > 0 && app.discover_sel < channel_count)
+                    join_channel(channels[app.discover_sel].name);
+            }
+            if (kDown & KEY_X) {
+                if (!loading) fetch_discover_channels();
+            }
+            break;
+        }
         case TAB_CHAT:
             if (kDown & KEY_DUP)   { app.scroll_offset++; app.scroll_locked = true; }
             if (kDown & KEY_DDOWN) {
@@ -1321,10 +1876,15 @@ static void handle_buttons(u32 kDown) {
             }
             if (kDown & KEY_A) {
                 char tmp[128] = {0};
-                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input))
+                if (swkbd_get(tmp, sizeof(tmp), "Type a message", false, app.input)) {
                     strncpy(app.input, tmp, sizeof(app.input)-1);
+                    app.input_display_dirty = true;
+                }
             }
-            if (kDown & KEY_B) app.input[0] = '\0';
+            if (kDown & KEY_B) {
+                app.input[0] = '\0';
+                app.input_display_dirty = true;
+            }
             break;
         case TAB_CHANNELS:
             if (kDown & KEY_DUP)   {
@@ -1349,10 +1909,21 @@ static void handle_buttons(u32 kDown) {
             if (kDown & KEY_A)     { if (app.history_count > 0) join_channel(app.history[app.history_sel].name); }
             if (kDown & KEY_X) {
                 char tmp[48] = {0};
-                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search))
+                if (swkbd_get(tmp, sizeof(tmp), "Enter channel name (no #)", false, app.channel_search)) {
                     strncpy(app.channel_search, tmp, sizeof(app.channel_search)-1);
+                    app.search_display_dirty = true;
+                    /* Auto-submit if search filled */
+                    if (app.channel_search[0]) {
+                        join_channel(app.channel_search);
+                        app.channel_search[0] = '\0';
+                        app.search_display_dirty = true;
+                    }
+                }
             }
-            if (kDown & KEY_B) app.channel_search[0] = '\0';
+            if (kDown & KEY_B) {
+                app.channel_search[0] = '\0';
+                app.search_display_dirty = true;
+            }
             break;
         case TAB_SETTINGS:
             break;
@@ -1381,10 +1952,11 @@ int main(void) {
     app.bot  = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
     app.font = C2D_FontLoadSystem(CFG_REGION_USA);
     app.tbuf = C2D_TextBufNew(16384);
+    app.cache_tbuf = C2D_TextBufNew(2048);  /* Separate buffer for cached static text */
 
     app.sock              = -1;
     app.irc_connected     = false;
-    app.tab               = TAB_CHAT;
+    app.tab               = TAB_DISCOVER;  /* Start on discover tab */
     app.state             = STATE_ERROR;
     app.line_head         = 0;
     app.line_count        = 0;
@@ -1394,6 +1966,20 @@ int main(void) {
     app.channels_scroll_offset = 0;
     app.vid_ever_started  = false;
     app.channel_loading   = false;
+    app.frame_count       = 0;
+    app.input_display_dirty = false;
+    app.search_display_dirty = false;
+    app.text_cache.initialized = false;
+    app.discover_count    = 0;
+    app.discover_sel      = 0;
+    app.discover_scroll   = 0;
+    app.discover_last_fetch = 0;
+    app.discover_loading  = false;
+    app.discover_status[0] = 0;
+    app.discover_cancel   = false;
+    LightLock_Init(&app.discover_lock);
+    app.discover_thread   = NULL;
+    memset(app.discover_list, 0, sizeof(app.discover_list));
     memset(app.lines,  0, sizeof(app.lines));
     memset(app.input,  0, sizeof(app.input));
     memset(app.channel_search, 0, sizeof(app.channel_search));
@@ -1416,7 +2002,13 @@ int main(void) {
     LOG("=== twitch3ds start ===");
     load_token();
     load_settings();
+    audio_set_compressor(app.audio_compressor);
+    audio_set_volume_level(app.audio_volume_level);
     load_history();
+
+    /* Discover is the initial tab, so start its first request automatically. */
+    if (app.logged_in)
+        fetch_discover_channels();
 
     chat_push("System","Welcome to Twitch3DS!");
     chat_push("System","Device Code login now available.");
@@ -1438,6 +2030,9 @@ int main(void) {
 
         if (kDown & KEY_START) break;
 
+        /* Initialize text cache on first frame */
+        if (!app.text_cache.initialized) init_text_cache();
+
         handle_buttons(kDown);
 
         static bool was_touching = false;
@@ -1453,7 +2048,8 @@ int main(void) {
             if (irc_connect()) set_status("IRC reconnected");
         }
 
-        if (app.state == STATE_WATCHING) irc_poll();
+        /* IRC polling throttled to 30Hz (every 2 frames) for performance */
+        if (app.state == STATE_WATCHING && (app.frame_count % 2) == 0) irc_poll();
 
         /* pick up fresh stream metadata from the video thread */
         video_poll_meta(app.stream_title, sizeof(app.stream_title),
@@ -1471,12 +2067,21 @@ int main(void) {
         draw_top();
         draw_bot();
         C3D_FrameEnd(0);
+
+        app.frame_count++;
     }
 
     save_settings();
     irc_disconnect();
+    if (app.discover_thread) {
+        app.discover_cancel = true;
+        threadJoin(app.discover_thread, U64_MAX);
+        threadFree(app.discover_thread);
+        app.discover_thread = NULL;
+    }
     video_exit();
     curl_global_cleanup();
+    C2D_TextBufDelete(app.cache_tbuf);
     C2D_TextBufDelete(app.tbuf);
     C2D_FontFree(app.font);
     C2D_Fini();

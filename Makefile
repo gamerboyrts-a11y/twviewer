@@ -80,9 +80,12 @@ export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS) --smdh=$(CURDIR)/$(TARGET).smdh
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all cia
 
 all: $(TARGET).smdh $(BUILD)
+
+cia:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File "$(CURDIR)/cia-build/build_cia.ps1"
 
 $(TARGET).smdh: $(ICON)
 	@smdhtool --create "$(APP_TITLE)" "$(APP_DESC)" "$(APP_AUTHOR)" $< $@

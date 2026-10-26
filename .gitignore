@@ -1,4 +1,26 @@
-# Build output
+# Publish allowlist: source, screenshots, build inputs, and packaging metadata.
+/*
+!/.gitignore
+!/Makefile
+!/build.bat
+!/README.md
+!/icon.png
+!/source/
+!/source/**
+!/screenshot/
+!/screenshot/**
+!/library/
+!/library/**
+!/romfs/
+!/romfs/**
+!/cia-build/
+!/cia-build/**
+
+# Local CIA tools and generated packaging work.
+/cia-build/tools/*.exe
+/cia-build/work/
+
+# Generated build and release artifacts.
 build/
 *.elf
 *.3dsx
@@ -7,31 +29,28 @@ build/
 *.cci
 *.3ds
 
-# Editor / OS
+# Local configuration, logs, notes, references, and old builds.
+/app_icon.png
+/meta/
+.cl*de/
+CL*UDE.md
+openspec/
+reference/
+config/
+OLD BUILD 2.0/
+build_log.txt
+BUILDLOG.md
+twitchadblocker
+*.log
+
+# Editor and OS files.
 .vscode/
 *.swp
 Thumbs.db
 .DS_Store
 
-# Logs / scratch
-build_log.txt
-*.log
-
-# Luma3DS crash dumps (dev artifacts, never commit)
+# Crash dumps and runtime-generated config.
 dumps/
-
-# Cloned reference repos
-reference/
-
-# User config / tokens (runtime-generated, never commit)
-config/
 twitch_token.txt
 twitch_settings.txt
 twitch_channels.txt
-
-# Claude Code project files
-.claude/
-CLAUDE.md
-
-# OpenSpec planning artifacts (local only)
-openspec/

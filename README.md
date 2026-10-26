@@ -18,10 +18,10 @@ Live video (MVD hardware decode) • AAC audio • IRC chat
 |------------|------|----------|-----------|
 | ![Top Screen](screenshot/topscreen.png) | ![Chat](screenshot/chat.png) | ![Settings](screenshot/setting.png) | ![Buffering](screenshot/buffering.png) |
 
-## Install via FBI QR Code
+## Download the 3DSX for Homebrew Launcher
 
-Open this page on your phone or PC, then scan the QR code with FBI on your 3DS
-(FBI → Remote Install → Scan QR Code). Always points to the latest release.
+Open this page on your phone or PC and scan the QR code to download the latest
+3DSX. Copy it to `sd:/3ds/` and launch it through Homebrew Launcher.
 
 ![QR Code](https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.3dsx)
 
@@ -35,13 +35,24 @@ Alternatively, download `twviewer.3dsx` from the
 [latest release](https://github.com/gamerboyrts-a11y/twviewer/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
-**After installation:** find app at `sd:/3ds/twviewer.3dsx` — launch from Homebrew Launcher.
+### Build an installable CIA
+
+The project-local CIA packaging setup is in `cia-build/`. Put `makerom.exe`
+and `bannertool.exe` in `cia-build/tools/`, then run
+`powershell -ExecutionPolicy Bypass -File .\cia-build\build_cia.ps1` from the
+project root. The resulting `twviewer.cia` can be installed with FBI and will
+appear on the Home Menu.
+
+For a Home Menu installation through FBI, build or obtain `twviewer.cia` first;
+FBI QR install requires a CIA URL.
 
 ## Features
 
 - Live stream video on the top screen (New 3DS MVD hardware H.264 decode)
-- Video quality selection: 160p or 360p (Settings tab)
+- Discover tab with the top 20 live channels (requires Twitch login)
+- Video quality selection: 160p, 360p, or 360p Ad-Free (Settings tab)
 - AAC audio playback (requires DSP firmware dump — run the DSP1 homebrew once)
+- Optional dynamics compressor and 200%/300% volume boost levels (Settings tab)
 - Twitch IRC chat (read + send)
 - Device Code login (no password needed)
 - Stream metadata overlay (title / game / viewers)
@@ -59,6 +70,7 @@ and copy it to `sd:/3ds/` for the Homebrew Launcher.
   <img src="screenshot/rosalina-menu.jpg" alt="Rosalina New 3DS menu showing the correct state — entries read 'Disable L2 cache' and 'Set clock rate to 268MHz'" width="380">
 
 - **Loading delays:** During stream startup, ads may be running on the server side. Wait for video to appear — this is normal Twitch behavior.
+- **Some channels use fragmented MP4 HLS:** TwViewer handles both MPEG-TS and fragmented MP4 stream segments. If a channel still stays on the loading screen, try rejoining it once after the stream has been live for a few seconds.
 - **System chat bug:** If you see system messages appearing in chat incorrectly, log out and log back in using the Device Code flow. This resets the IRC connection and fixes chat display.
 
 ## Credits

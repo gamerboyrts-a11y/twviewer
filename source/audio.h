@@ -14,5 +14,13 @@ void audio_reset(void);
 /* Feed a chunk of ADTS AAC data (an audio PES payload from the TS demuxer).
  * Splits it into ADTS frames, decodes and queues them on the DSP. */
 void audio_feed(const u8 *data, int len);
+void audio_feed_raw(const u8 *data, int len);
 
 bool audio_available(void);
+
+/* Set audio processing state (called from main.c when settings change). */
+void audio_set_compressor(bool enabled);
+/* 0 = 100%, 1 = 200%, 2 = 300% input gain before the safety limiter. */
+void audio_set_volume_level(int level);
+/* Compatibility wrapper for callers that only need the original toggle. */
+void audio_set_volume_boost(bool enabled);
