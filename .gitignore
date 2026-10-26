@@ -17,7 +17,8 @@
 !/cia-build/**
 
 # Local CIA tools and generated packaging work.
-/cia-build/tools/*.exe
+/cia-build/tools/*
+!/cia-build/tools/README.md
 /cia-build/work/
 
 # Generated build and release artifacts.

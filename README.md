@@ -35,6 +35,19 @@ Alternatively, download `twviewer.3dsx` from the
 [latest release](https://github.com/gamerboyrts-a11y/twviewer/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
 
+## Install the CIA with FBI
+
+Open this page on your phone or PC, then scan the QR code in FBI using
+**Remote Install → Scan QR Code**. The CIA installs TwViewer on the Home Menu.
+
+![CIA QR Code](https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.cia)
+
+Or enter this URL manually in FBI:
+
+```
+https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.cia
+```
+
 **The following configuration files are used:**
 - TOKEN_FILE — `/config/twitch_token.txt`
 - SETTINGS_FILE — `/config/twitch_settings.txt`
