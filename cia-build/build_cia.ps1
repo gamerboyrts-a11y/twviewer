@@ -4,8 +4,10 @@ $project = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ciaRoot = $PSScriptRoot
 $tools = Join-Path $ciaRoot 'tools'
 $meta = Join-Path $ciaRoot 'meta'
+$bannerImagePath = Join-Path $meta 'banner.png'
 $work = Join-Path $ciaRoot 'work'
 $output = Join-Path $project 'twviewer.cia'
+$titleVersion = 2
 
 $devkitProRoot = 'C:\devkitPro'
 $gcc = Join-Path $devkitProRoot 'devkitARM\bin\arm-none-eabi-gcc.exe'
@@ -28,6 +30,16 @@ if (-not $makerom) { $missing += 'makerom.exe' }
 if (-not $bannertool) { $missing += 'bannertool.exe' }
 if ($missing.Count) {
     throw "Missing tools: $($missing -join ', '). CIA packagers belong in $tools."
+}
+
+Add-Type -AssemblyName System.Drawing
+$bannerImage = [System.Drawing.Image]::FromFile($bannerImagePath)
+try {
+    if ($bannerImage.Width -ne 256 -or $bannerImage.Height -ne 128) {
+        throw "CIA banner must be 256x128 pixels; found $($bannerImage.Width)x$($bannerImage.Height)."
+    }
+} finally {
+    $bannerImage.Dispose()
 }
 
 New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -73,7 +85,7 @@ try {
     & $makerom -f cia -o $output -target t -exefslogo `
         -elf $elf -rsf (Join-Path $ciaRoot 'app.rsf') -banner $banner -icon $icon `
         '-DAPP_TITLE=TwViewer' '-DAPP_PRODUCT_CODE=CTR-TWVR' '-DAPP_UNIQUE_ID=0xECA11' `
-        '-DAPP_ROMFS=romfs' '-DAPP_VERSION_MAJOR=1' -ver 1
+        '-DAPP_ROMFS=romfs' ("-DAPP_VERSION_MAJOR=$titleVersion") -ver $titleVersion
     if ($LASTEXITCODE -ne 0) { throw "makerom failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location
