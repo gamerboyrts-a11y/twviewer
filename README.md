@@ -34,6 +34,12 @@ https://github.com/gamerboyrts-a11y/twviewer/releases/latest/download/twviewer.3
 Alternatively, download `twviewer.3dsx` from the
 [latest release](https://github.com/gamerboyrts-a11y/twviewer/releases/latest)
 and copy it to `sd:/3ds/` for the Homebrew Launcher.
+- Install via FBI (QR code): `sd:/3ds/twviewer/twviewer.3dsx`
+
+**The following configuration files are used:** 
+- TOKEN_FILE — `/config/twitch_token.txt`
+- SETTINGS_FILE — `/config/twitch_settings.txt`
+- HISTORY_FILE — `/config/twitch_channels.txt`
 
 ### Build an installable CIA
 
@@ -97,6 +103,8 @@ MIT License - free to use, modify, and distribute.
 - libctru, citro2d/3d: zlib License
 
 ## Disclaimer
+
+This is unofficial, experimental homebrew provided as-is. Use at your own risk — I'm not responsible for any damage, data loss, or issues caused to your device from using this app.
 
 TwViewer is an independent project and is not affiliated with, endorsed by, or sponsored by Twitch Interactive, Inc. "Twitch" is a trademark of Twitch Interactive, Inc.
 
