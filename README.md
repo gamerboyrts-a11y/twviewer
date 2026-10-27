@@ -14,13 +14,9 @@ Live video (MVD hardware decode) • AAC audio • IRC chat
 
 ## Screenshots
 
-| Top Screen | Chat |
-|------------|------|
-| ![Top Screen](screenshot/topscreen.png) | ![Chat](screenshot/chat.png) |
-
-| Discover Tab | Settings Tab |
-|--------------|--------------|
-| ![Discover Tab](screenshot/DiscoverTab.png) | ![Settings Tab](screenshot/v0.5.1_settingtab.png) |
+| Top Screen | Chat | Discover | Settings |
+|------------|------|----------|----------|
+| ![Top Screen](screenshot/topscreen.png) | ![Chat](screenshot/chat.png) | ![Discover Tab](screenshot/DiscoverTab.png) | ![Settings Tab](screenshot/v0.5.1_settingtab.png) |
 
 ## Install the CIA with FBI
 
